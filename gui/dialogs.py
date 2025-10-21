@@ -10,12 +10,14 @@ from core.qt_compat import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from core.browser_detection import BrowserInfo
@@ -46,9 +48,17 @@ class ProfileDialog(QDialog):
         self.auth_combo = QComboBox()
         self.auth_combo.addItems(["password", "saml"])
         self.auth_combo.currentTextChanged.connect(self._on_auth_changed)
+        self.custom_saml_check = QCheckBox("Use custom SAML port")
         self.saml_port_spin = QSpinBox()
         self.saml_port_spin.setRange(1, 65535)
-        self.saml_port_spin.setValue(8443)
+        self.saml_port_spin.setValue(8020)
+        self.saml_port_spin.setEnabled(False)
+        self.custom_saml_check.toggled.connect(self._update_saml_port_state)
+        saml_port_container = QWidget()
+        saml_layout = QHBoxLayout(saml_port_container)
+        saml_layout.setContentsMargins(0, 0, 0, 0)
+        saml_layout.addWidget(self.custom_saml_check)
+        saml_layout.addWidget(self.saml_port_spin)
         self.browser_combo = QComboBox()
         for browser in self._browsers:
             self.browser_combo.addItem(browser.name, browser.key)
@@ -62,7 +72,7 @@ class ProfileDialog(QDialog):
         form.addRow("Host", self.host_edit)
         form.addRow("Port", self.port_spin)
         form.addRow("Auth Type", self.auth_combo)
-        form.addRow("SAML Port", self.saml_port_spin)
+        form.addRow("SAML Port", saml_port_container)
         form.addRow("Browser", self.browser_combo)
         form.addRow("Browser Profile", self.profile_combo)
         form.addRow("Username", self.username_edit)
@@ -87,7 +97,10 @@ class ProfileDialog(QDialog):
         if index >= 0:
             self.auth_combo.setCurrentIndex(index)
         if profile.saml_port:
+            self.custom_saml_check.setChecked(True)
             self.saml_port_spin.setValue(profile.saml_port)
+        else:
+            self.custom_saml_check.setChecked(False)
         browser_index = self.browser_combo.findData(profile.browser)
         if browser_index >= 0:
             self.browser_combo.setCurrentIndex(browser_index)
@@ -113,10 +126,20 @@ class ProfileDialog(QDialog):
 
     def _on_auth_changed(self, value: str) -> None:
         is_saml = value.lower() == "saml"
-        self.saml_port_spin.setEnabled(is_saml)
+        self.custom_saml_check.setEnabled(is_saml)
         self.browser_combo.setEnabled(is_saml)
         self.profile_combo.setEnabled(is_saml)
         self.username_edit.setEnabled(not is_saml)
+        if not is_saml:
+            self.custom_saml_check.setChecked(False)
+        self._update_saml_port_state()
+
+    def _update_saml_port_state(self) -> None:
+        use_custom = (
+            self.auth_combo.currentText().lower() == "saml"
+            and self.custom_saml_check.isChecked()
+        )
+        self.saml_port_spin.setEnabled(use_custom)
 
     def _on_accept(self) -> None:
         if not self.name_edit.text().strip() or not self.host_edit.text().strip():
@@ -128,15 +151,19 @@ class ProfileDialog(QDialog):
         if self.exec() != QDialog.DialogCode.Accepted:
             return None
         routes = [route.strip() for route in self.routes_edit.toPlainText().splitlines() if route.strip()]
+        auth_type = self.auth_combo.currentText().lower()
+        saml_port = None
+        if auth_type == "saml" and self.custom_saml_check.isChecked():
+            saml_port = self.saml_port_spin.value()
         profile = VPNProfile(
             name=self.name_edit.text().strip(),
             host=self.host_edit.text().strip(),
             port=self.port_spin.value(),
-            auth_type=self.auth_combo.currentText().lower(),
-            saml_port=self.saml_port_spin.value() if self.saml_port_spin.isEnabled() else None,
+            auth_type=auth_type,
+            saml_port=saml_port,
             browser=self.browser_combo.currentData(),
             browser_profile=self.profile_combo.currentData() or None,
-            username=self.username_edit.text().strip() if self.username_edit.isEnabled() else None,
+            username=self.username_edit.text().strip() if auth_type != "saml" else None,
             auto_reconnect=self.auto_reconnect_check.isChecked(),
             routes=routes,
         )

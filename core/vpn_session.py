@@ -164,9 +164,15 @@ class VPNSession(QThread):
                     break
         if self.profile.auth_type.lower() == "saml":
             if not self._browser_launched and ("Authenticate" in line or "browser" in line.lower()):
-                match = re.search(r"https?://[^\s]+", line)
+                # The authenticate line is usually wrapped in single quotes by
+                # openfortivpn (e.g. Authenticate at 'https://host/path').
+                # Extract the URL without any trailing quotes so the browser
+                # receives a clean location and does not percent-encode the
+                # quote character into the request.
+                match = re.search(r"https?://[^\s\"']+", line)
                 if match:
-                    self._launch_browser(match.group(0))
+                    url = match.group(0).rstrip("'\"")
+                    self._launch_browser(url)
                     self._browser_launched = True
         else:
             if PASSWORD_PROMPT_RE.search(line) and self._process and self._process.stdin:
