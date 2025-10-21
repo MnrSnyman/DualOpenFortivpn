@@ -1,0 +1,9 @@
+PySide6>=6.6
+aiohttp>=3.9
+psutil>=5.9
+cryptography>=41.0
+typer[all]>=0.9
+rich>=13.0
+distro>=1.8
+PyYAML>=6.0
+notify2>=0.3
