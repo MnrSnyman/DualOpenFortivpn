@@ -154,7 +154,7 @@ echo "[SUCCESS] Installation complete. Launch with: python3 -m openfortivpn_gui"
 
 ```bash
 git clone https://github.com/MnrSnyman/OpenFortiVPN-Manager.git
-cd openfortivpn-manager
+cd OpenFortiVPN-Manager
 # Activate the virtual environment if you created one:
 source .venv/bin/activate 2>/dev/null || true
 python3 -m openfortivpn_gui            # launch the PySide6 GUI
