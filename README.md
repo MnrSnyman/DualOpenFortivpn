@@ -82,6 +82,7 @@ OpenFortiVPN Manager depends on:
 - `cryptography` – encrypted credential storage
 - `notify2` – desktop notifications
 - `distro` – Linux distribution detection
+- `requests` – GitHub release checks and HTTP helpers
 
 **Using a virtual environment (recommended):**
 
@@ -89,30 +90,47 @@ OpenFortiVPN Manager depends on:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro
+python -m pip install --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro requests
 ```
 
 **Using per-user pip (without a virtual environment):**
 
 ```bash
 python3 -m pip install --user --upgrade pip
-python3 -m pip install --user --upgrade PySide6 aiohttp "typer[all]" rich psutil PyYAML cryptography notify2 distro
+python3 -m pip install --user --upgrade PySide6 aiohttp "typer[all]" rich psutil PyYAML cryptography notify2 distro requests
 ```
 
 ### Quick Install (Advanced Users)
 
-Run this command to clone the repository anonymously, detect your distribution, install system prerequisites, and install Python dependencies using `pip --user`:
+Run this command to clone the repository anonymously, detect your distribution, install system prerequisites, and install Python dependencies using `pip --user`. The script standardises everything under `$HOME/OpenFortiVPN-Manager` and cleans up legacy folder names automatically:
 
 ```bash
 bash -c '
 set -euo pipefail
+
 APPDIR="${APPDIR:-$HOME/OpenFortiVPN-Manager}"
+LEGACY_DIRS=("$HOME/OpenFortiVPN_Manager" "$HOME/openfortivpn-manager" "$HOME/openfortivpn_manager")
+
+for legacy in "${LEGACY_DIRS[@]}"; do
+  if [ -d "$legacy" ] && [ "$legacy" != "$APPDIR" ]; then
+    if [ ! -e "$APPDIR" ]; then
+      echo "[WARN] Renaming legacy directory $legacy to $APPDIR"
+      mv "$legacy" "$APPDIR"
+    else
+      echo "[WARN] Removing duplicate legacy directory $legacy"
+      rm -rf "$legacy"
+    fi
+  fi
+done
 
 if [ -d "$APPDIR/.git" ]; then
   echo "[INFO] Repository already present at $APPDIR"
 elif [ -d "$APPDIR" ]; then
-  echo "[INFO] Using existing directory at $APPDIR (skipping clone)"
-else
+  echo "[WARN] Existing non-git directory found at $APPDIR; removing before clone"
+  rm -rf "$APPDIR"
+fi
+
+if [ ! -d "$APPDIR" ]; then
   echo "[INFO] Cloning OpenFortiVPN Manager into $APPDIR"
   if ! GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git clone --depth 1 https://github.com/MnrSnyman/OpenFortiVPN-Manager.git "$APPDIR"; then
     echo "[ERROR] Failed to clone repository anonymously." >&2
@@ -144,7 +162,7 @@ case "$ID" in
 esac
 
 python3 -m pip install --user --upgrade pip
-python3 -m pip install --user --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro
+python3 -m pip install --user --upgrade PySide6 aiohttp "typer[all]" rich psutil PyYAML cryptography notify2 distro requests
 
 echo "[SUCCESS] Installation complete. Launch with: python3 -m openfortivpn_gui"
 '
@@ -153,8 +171,8 @@ echo "[SUCCESS] Installation complete. Launch with: python3 -m openfortivpn_gui"
 ### Running the Application
 
 ```bash
-git clone https://github.com/MnrSnyman/OpenFortiVPN-Manager.git
-cd OpenFortiVPN-Manager
+git clone https://github.com/MnrSnyman/OpenFortiVPN-Manager.git "$HOME/OpenFortiVPN-Manager"
+cd "$HOME/OpenFortiVPN-Manager"
 # Activate the virtual environment if you created one:
 source .venv/bin/activate 2>/dev/null || true
 python3 -m openfortivpn_gui            # launch the PySide6 GUI
@@ -175,14 +193,26 @@ python3 -m openfortivpn_gui --cli list # list profiles via the CLI companion
 - **PKI authentication dialogs:** Accept the `pkexec` prompt that appears when connecting; denying or closing it will abort tunnel setup.
 - **Configuration or permission issues:** Remove `~/.config/openfortivpn-gui/config.json` (after backing up) and relaunch to regenerate defaults, ensuring your user owns the configuration directory.
 
+### Cleanup / Uninstall
+
+To remove OpenFortiVPN Manager completely, delete the application directory and its supporting assets:
+
+```bash
+rm -rf "$HOME/OpenFortiVPN-Manager"
+rm -f "$HOME/.local/share/applications/openfortivpn-gui.desktop"
+rm -rf "$HOME/.config/openfortivpn-gui"
+```
+
+If you previously experimented with legacy folder names such as `~/openfortivpn-manager` or `~/OpenFortiVPN_Manager`, remove them as well to avoid confusion.
+
 ### Updating
 
 Refresh the source code and upgrade dependencies (activate your virtual environment first if you use one):
 
 ```bash
-cd openfortivpn-manager
+cd "$HOME/OpenFortiVPN-Manager"
 git pull --ff-only
-python -m pip install --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro
+python -m pip install --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro requests
 ```
 ## Configuration
 
