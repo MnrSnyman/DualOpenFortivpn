@@ -1,0 +1,105 @@
+/* Uptime Kuma inspired LIGHT theme for OpenFortiVPN Manager */
+
+:root {
+    --background-color: #f5f6f8;
+    --card-background: #ffffff;
+    --accent-color: #4e9cff;
+    --text-color: #1e1e2f;
+    --text-secondary: #333333;
+    --success-color: #28a745;
+    --warning-color: #ffc107;
+    --error-color: #dc3545;
+    --border-color: #d6d6d6;
+    --radius: 8px;
+    --padding: 8px;
+}
+
+QWidget {
+    background-color: var(--background-color);
+    color: var(--text-color);
+    font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+QFrame#Card {
+    background-color: var(--card-background);
+    border-radius: var(--radius);
+    padding: var(--padding);
+    border: 1px solid var(--border-color);
+}
+
+QPushButton {
+    background-color: var(--accent-color);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: var(--padding);
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: #3b82e3;
+}
+
+QPushButton:disabled {
+    background-color: #cccccc;
+    color: #888888;
+}
+
+QTableWidget {
+    background-color: var(--card-background);
+    border: 1px solid var(--border-color);
+    gridline-color: var(--border-color);
+    alternate-background-color: #f9fafc;
+}
+
+QHeaderView::section {
+    background-color: #f0f1f3;
+    color: var(--text-color);
+    padding: var(--padding);
+    border: none;
+    font-weight: 600;
+}
+
+QTableWidget::item {
+    padding: var(--padding);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.statusIndicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    margin-right: 6px;
+}
+
+.statusIndicator.connected {
+    background-color: var(--success-color);
+}
+
+.statusIndicator.connecting {
+    background-color: var(--warning-color);
+}
+
+.statusIndicator.disconnected, .statusIndicator.idle {
+    background-color: #aaaaaa;
+}
+
+.statusIndicator.error {
+    background-color: var(--error-color);
+}
+
+QToolBar, QMenuBar {
+    background-color: var(--card-background);
+    color: var(--text-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+QMenu {
+    background-color: var(--card-background);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+}
+
+QMenu::item:selected {
+    background-color: #e5f0ff;
+}
