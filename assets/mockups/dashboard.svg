@@ -1,0 +1,67 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720' viewBox='0 0 1280 720'>
+  <defs>
+    <linearGradient id='bg' x1='0%' y1='0%' x2='0%' y2='100%'>
+      <stop offset='0%' stop-color='#1f2430'/>
+      <stop offset='100%' stop-color='#15181f'/>
+    </linearGradient>
+    <style>
+      .title { font: 48px "DejaVu Sans", sans-serif; fill: #eef2f7; }
+      .subtitle { font: 24px "DejaVu Sans", sans-serif; fill: #98a3b3; }
+      .card-title { font: 26px "DejaVu Sans", sans-serif; fill: #eef2f7; }
+      .card-body { font: 20px "DejaVu Sans", sans-serif; fill: #c9d1dd; }
+      .badge { font: 20px "DejaVu Sans", sans-serif; fill: #62a0ea; }
+      .button { font: 22px "DejaVu Sans", sans-serif; fill: #1f2430; }
+    </style>
+  </defs>
+  <rect width='1280' height='720' fill='url(#bg)' rx='32'/>
+  <text x='60' y='90' class='title'>OpenFortiVPN Manager</text>
+  <text x='60' y='130' class='subtitle'>Dashboard · Inspired by Uptime Kuma</text>
+  <g>
+  <rect x='60' y='160' width='520' height='220' rx='28' fill='#2d3341'/>
+  <text x='100' y='220' class='card-title'>Engineering VPN</text>
+  <text x='100' y='265' class='badge'>🟢 Connected</text>
+  <text x='100' y='300' class='card-body'>IP 10.1.2.3</text>
+  <text x='100' y='335' class='card-body'>Interface ppp0</text>
+  <text x='100' y='370' class='card-body'>RX 125 MB / TX 22 MB</text>
+</g>
+<g>
+  <rect x='660' y='160' width='520' height='220' rx='28' fill='#2d3341'/>
+  <text x='700' y='220' class='card-title'>Support Tunnel</text>
+  <text x='700' y='265' class='badge'>🟠 Reconnecting</text>
+  <text x='700' y='300' class='card-body'>Retry in 14s</text>
+  <text x='700' y='335' class='card-body'>Interface ppp1</text>
+  <text x='700' y='370' class='card-body'>Auto reconnect enabled</text>
+</g>
+<g>
+  <rect x='60' y='400' width='520' height='220' rx='28' fill='#2d3341'/>
+  <text x='100' y='460' class='card-title'>Finance VPN</text>
+  <text x='100' y='505' class='badge'>🔴 Disconnected</text>
+  <text x='100' y='540' class='card-body'>Last used 2h ago</text>
+  <text x='100' y='575' class='card-body'>Interface ppp2</text>
+  <text x='100' y='610' class='card-body'>SAML</text>
+</g>
+<g>
+  <rect x='660' y='400' width='520' height='220' rx='28' fill='#2d3341'/>
+  <text x='700' y='460' class='card-title'>QA Lab</text>
+  <text x='700' y='505' class='badge'>🟢 Connected</text>
+  <text x='700' y='540' class='card-body'>IP 172.16.0.8</text>
+  <text x='700' y='575' class='card-body'>Interface ppp3</text>
+  <text x='700' y='610' class='card-body'>Routes: lab/*</text>
+</g>
+  <g>
+  <rect x='60' y='600' width='180' height='56' rx='16' fill='#62a0ea'/>
+  <text x='150' y='635' text-anchor='middle' class='button'>Connect</text>
+</g>
+<g>
+  <rect x='280' y='600' width='180' height='56' rx='16' fill='#62a0ea'/>
+  <text x='370' y='635' text-anchor='middle' class='button'>Disconnect</text>
+</g>
+<g>
+  <rect x='500' y='600' width='180' height='56' rx='16' fill='#62a0ea'/>
+  <text x='590' y='635' text-anchor='middle' class='button'>View Logs</text>
+</g>
+<g>
+  <rect x='720' y='600' width='180' height='56' rx='16' fill='#62a0ea'/>
+  <text x='810' y='635' text-anchor='middle' class='button'>Settings</text>
+</g>
+</svg>
