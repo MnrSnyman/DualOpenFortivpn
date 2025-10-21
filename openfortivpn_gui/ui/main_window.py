@@ -12,7 +12,95 @@ from ..core.manager import ConnectionManager
 from ..core.profile import VPNProfile
 from ..utils import browsers
 from ..utils.logging import session_log_path
-from .themes import apply_stylesheet
+
+DARK_QSS = """
+QWidget {
+    background-color: #1E1E2F;
+    color: #FFFFFF;
+    font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 14px;
+}
+QTreeWidget, QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {
+    background-color: #232336;
+    border: 1px solid #2F2F44;
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: #FFFFFF;
+}
+QHeaderView::section {
+    background-color: #232336;
+    color: #CCCCCC;
+    padding: 8px 12px;
+    border: none;
+    font-weight: 600;
+}
+QPushButton {
+    background-color: #0078D4;
+    border: none;
+    border-radius: 8px;
+    color: #FFFFFF;
+    padding: 6px 16px;
+}
+QPushButton:hover {
+    background-color: #1890F0;
+}
+QPushButton:disabled {
+    background-color: #30304A;
+    color: #8E8EA0;
+}
+QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
+    color: #777799;
+}
+QToolTip {
+    background-color: #232336;
+    color: #FFFFFF;
+    border: 1px solid #0078D4;
+    padding: 6px;
+}
+"""
+
+LIGHT_QSS = """
+QWidget {
+    background-color: #F5F7FA;
+    color: #1E1E2F;
+    font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 14px;
+}
+QTreeWidget, QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #D0D4E4;
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: #1E1E2F;
+}
+QHeaderView::section {
+    background-color: #EBEEF5;
+    color: #1E1E2F;
+    padding: 8px 12px;
+    border: none;
+    font-weight: 600;
+}
+QPushButton {
+    background-color: #0078D4;
+    border: none;
+    border-radius: 8px;
+    color: #FFFFFF;
+    padding: 6px 16px;
+}
+QPushButton:hover {
+    background-color: #1890F0;
+}
+QPushButton:disabled {
+    background-color: #C8CCDB;
+    color: #656A7E;
+}
+QToolTip {
+    background-color: #1E1E2F;
+    color: #FFFFFF;
+    border: 1px solid #0078D4;
+    padding: 6px;
+}
+"""
 
 COLUMN_NAME = 0
 COLUMN_STATUS = 1
@@ -33,41 +121,6 @@ def _status_icon(color: str) -> QtGui.QIcon:
     painter.setPen(QtCore.Qt.PenStyle.NoPen)
     painter.setBrush(QtGui.QBrush(QtGui.QColor(color)))
     painter.drawEllipse(2, 2, 12, 12)
-    painter.end()
-    return QtGui.QIcon(pixmap)
-
-
-def _action_icon(color: str) -> QtGui.QIcon:
-    pixmap = QtGui.QPixmap(18, 18)
-    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
-    painter = QtGui.QPainter(pixmap)
-    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-    pen = QtGui.QPen(QtGui.QColor(color))
-    pen.setWidth(2)
-    painter.setPen(pen)
-    painter.setBrush(QtGui.QBrush(QtGui.QColor(color)))
-    painter.drawEllipse(3, 3, 12, 12)
-    painter.end()
-    return QtGui.QIcon(pixmap)
-
-
-def _theme_icon(theme: str) -> QtGui.QIcon:
-    pixmap = QtGui.QPixmap(18, 18)
-    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
-    painter = QtGui.QPainter(pixmap)
-    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-    if theme == "dark":
-        painter.setBrush(QtGui.QColor("#F1C933"))
-        painter.setPen(QtCore.Qt.PenStyle.NoPen)
-        painter.drawEllipse(2, 2, 14, 14)
-        painter.setBrush(QtGui.QColor("#1E1E2F"))
-        painter.drawEllipse(8, 2, 8, 14)
-    else:
-        painter.setBrush(QtGui.QColor("#1890F0"))
-        painter.setPen(QtCore.Qt.PenStyle.NoPen)
-        painter.drawEllipse(2, 2, 14, 14)
-        painter.setBrush(QtGui.QColor("#FFFFFF"))
-        painter.drawEllipse(5, 5, 8, 8)
     painter.end()
     return QtGui.QIcon(pixmap)
 
@@ -265,15 +318,8 @@ class MainWindow(QtWidgets.QMainWindow):
             ConnectionState.CONNECTED: _status_icon("#3CC480"),
             ConnectionState.CONNECTING: _status_icon("#F1C933"),
             ConnectionState.DISCONNECTED: _status_icon("#FF616D"),
-            ConnectionState.ERROR: _status_icon("#FF616D"),
+            ConnectionState.ERROR: _status_icon("#8E8EA0"),
             ConnectionState.RECONNECTING: _status_icon("#F1C933"),
-        }
-        self.action_icons = {
-            "connect": _action_icon("#3CC480"),
-            "connected": _action_icon("#3CC480"),
-            "pending": _action_icon("#F1C933"),
-            "disconnect": _action_icon("#FF616D"),
-            "disabled": _action_icon("#8E8EA0"),
         }
         self._build_ui()
         stored_theme = self.settings.value("appearance/theme", "dark")
@@ -309,8 +355,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_button = QtWidgets.QPushButton("Export")
         self.import_button = QtWidgets.QPushButton("Import")
         self.log_button = QtWidgets.QPushButton("View Logs")
-        self.theme_toggle = QtWidgets.QPushButton("Toggle Theme")
-        self.theme_toggle.setIconSize(QtCore.QSize(18, 18))
+        self.theme_toggle = QtWidgets.QPushButton()
 
         for button, tooltip in [
             (self.add_button, "Create a new VPN profile"),
@@ -404,14 +449,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tray.show()
 
     def _apply_theme(self, theme: str) -> None:
-        theme_name = theme if theme in {"dark", "light"} else "dark"
-        apply_stylesheet(QtWidgets.QApplication.instance(), theme_name)
-        self.current_theme = theme_name
-        self.settings.setValue("appearance/theme", theme_name)
-        target = "light" if theme_name == "dark" else "dark"
-        self.theme_toggle.setText("Toggle Theme")
-        self.theme_toggle.setToolTip(f"Switch to {target} theme")
-        self.theme_toggle.setIcon(_theme_icon(target))
+        app = QtWidgets.QApplication.instance()
+        if not app:
+            return
+        stylesheet = DARK_QSS if theme == "dark" else LIGHT_QSS
+        app.setStyle("Fusion")
+        app.setStyleSheet(stylesheet)
+        self.current_theme = theme
+        self.settings.setValue("appearance/theme", theme)
+        if theme == "dark":
+            self.theme_toggle.setText("Light Mode")
+            self.theme_toggle.setToolTip("Switch to light theme")
+        else:
+            self.theme_toggle.setText("Dark Mode")
+            self.theme_toggle.setToolTip("Switch to dark theme")
 
     def _refresh_profiles(self) -> None:
         self.profile_view.clear()
@@ -448,24 +499,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         connect_btn = QtWidgets.QPushButton("Connect")
         disconnect_btn = QtWidgets.QPushButton("Disconnect")
-        connect_btn.setObjectName("connectButton")
-        disconnect_btn.setObjectName("disconnectButton")
         connect_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         disconnect_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         connect_btn.setToolTip(f"Connect {profile_name}")
         disconnect_btn.setToolTip(f"Disconnect {profile_name}")
         disconnect_btn.setEnabled(False)
-        connect_btn.setIcon(self.action_icons["connect"])
-        connect_btn.setIconSize(QtCore.QSize(16, 16))
-        disconnect_btn.setIcon(self.action_icons["disabled"])
-        disconnect_btn.setIconSize(QtCore.QSize(16, 16))
 
         connect_btn.clicked.connect(lambda _, n=profile_name: self._connect_profile(n))
         disconnect_btn.clicked.connect(lambda _, n=profile_name: self._disconnect_profile(n))
 
         layout.addWidget(connect_btn)
         layout.addWidget(disconnect_btn)
-        layout.addStretch(1)
         container.setLayout(layout)
         self.profile_view.setItemWidget(item, COLUMN_ACTIONS, container)
         self._row_buttons[profile_name] = (connect_btn, disconnect_btn)
@@ -505,34 +549,26 @@ class MainWindow(QtWidgets.QMainWindow):
         if status.state == ConnectionState.CONNECTED:
             connect_btn.setEnabled(False)
             connect_btn.setText("Connected")
-            connect_btn.setIcon(self.action_icons["connected"])
             connect_btn.setToolTip(f"{profile_name} is connected")
             disconnect_btn.setEnabled(True)
-            disconnect_btn.setIcon(self.action_icons["disconnect"])
             disconnect_btn.setToolTip(f"Disconnect {profile_name}")
         elif status.state in {ConnectionState.CONNECTING, ConnectionState.RECONNECTING}:
             connect_btn.setEnabled(False)
             connect_btn.setText("Connecting…")
-            connect_btn.setIcon(self.action_icons["pending"])
             connect_btn.setToolTip(f"{profile_name} is establishing a tunnel")
             disconnect_btn.setEnabled(True)
-            disconnect_btn.setIcon(self.action_icons["disconnect"])
             disconnect_btn.setToolTip(f"Cancel connection for {profile_name}")
         elif status.state == ConnectionState.ERROR:
             connect_btn.setEnabled(True)
             connect_btn.setText("Retry")
-            connect_btn.setIcon(self.action_icons["connect"])
             connect_btn.setToolTip(status.last_error or f"Retry connection for {profile_name}")
             disconnect_btn.setEnabled(False)
-            disconnect_btn.setIcon(self.action_icons["disabled"])
             disconnect_btn.setToolTip(f"{profile_name} is not connected")
         else:
             connect_btn.setEnabled(True)
             connect_btn.setText("Connect")
-            connect_btn.setIcon(self.action_icons["connect"])
             connect_btn.setToolTip(f"Connect {profile_name}")
             disconnect_btn.setEnabled(False)
-            disconnect_btn.setIcon(self.action_icons["disabled"])
             disconnect_btn.setToolTip(f"{profile_name} is not connected")
 
     def _selected_profile_name(self) -> str | None:

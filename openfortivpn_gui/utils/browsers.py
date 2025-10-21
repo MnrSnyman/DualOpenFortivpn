@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import configparser
 import os
 import shutil
 import subprocess
 import webbrowser
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 BROWSER_BINARIES = {
     "firefox": "firefox",
@@ -34,16 +33,21 @@ def detect_browsers() -> List[str]:
 
 
 def detect_profiles(browser: str) -> List[str]:
+    home = Path.home()
     profiles: list[str] = []
     if browser == "firefox":
-        profiles.extend(_firefox_profile_map().keys())
+        profiles_ini = home / ".mozilla" / "firefox" / "profiles.ini"
+        if profiles_ini.exists():
+            for line in profiles_ini.read_text(encoding="utf-8").splitlines():
+                if line.startswith("Name="):
+                    profiles.append(line.split("=", 1)[1].strip())
     elif browser in _CHROMIUM_PROFILE_ROOTS:
         base = _CHROMIUM_PROFILE_ROOTS[browser]
         if base.exists():
             for path in base.iterdir():
                 if path.is_dir() and (path.name.endswith("Default") or path.name.startswith("Profile")):
                     profiles.append(path.name)
-    return sorted(dict.fromkeys(profiles))
+    return profiles
 
 
 def _browser_binary(browser: str | None) -> str | None:
@@ -69,15 +73,11 @@ def launch_browser(browser: str | None, profile: str | None, url: str) -> bool:
     cmd = [binary]
     if browser == "firefox":
         if profile:
-            profile_path = _firefox_profile_map().get(profile)
-            if profile_path:
-                cmd.extend(["--no-remote", "--profile", str(profile_path)])
-            else:
-                cmd.extend(["--no-remote", "-P", profile])
+            cmd.extend(["--no-remote", "-P", profile])
         cmd.extend(["--new-tab", url])
     elif browser in _CHROMIUM_PROFILE_ROOTS:
         if profile:
-            cmd.extend(["--profile-directory", profile])
+            cmd.append(f"--profile-directory={profile}")
         profile_root = _CHROMIUM_PROFILE_ROOTS[browser]
         if profile_root.exists():
             cmd.append(f"--user-data-dir={profile_root}")
@@ -92,35 +92,4 @@ def launch_browser(browser: str | None, profile: str | None, url: str) -> bool:
     except OSError:
         webbrowser.open(url)
         return False
-
-
-def _firefox_profile_map() -> Dict[str, Path]:
-    """Parse Firefox profile metadata and return ``{name: absolute_path}``."""
-
-    profiles_ini = Path.home() / ".mozilla" / "firefox" / "profiles.ini"
-    if not profiles_ini.exists():
-        return {}
-
-    parser = configparser.RawConfigParser()
-    parser.optionxform = str  # preserve case of keys like "IsRelative"
-    try:
-        with profiles_ini.open("r", encoding="utf-8") as handle:
-            parser.read_file(handle)
-    except OSError:
-        return {}
-
-    profiles: Dict[str, Path] = {}
-    for section in parser.sections():
-        if not section.startswith("Profile"):
-            continue
-        if not parser.has_option(section, "Name") or not parser.has_option(section, "Path"):
-            continue
-        name = parser.get(section, "Name")
-        path_value = parser.get(section, "Path")
-        is_relative = parser.get(section, "IsRelative", fallback="1") != "0"
-        path = Path(path_value)
-        if is_relative:
-            path = profiles_ini.parent / path
-        profiles[name] = path.resolve()
-    return profiles
 
