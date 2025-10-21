@@ -35,7 +35,6 @@ import socket
 import shutil
 import threading
 import subprocess
-import shlex
 from dataclasses import dataclass, asdict
 from ipaddress import ip_network, ip_address
 from typing import Optional, List, Dict, Callable, Tuple
@@ -68,7 +67,6 @@ from PyQt6.QtWidgets import (
 CONFIG_DIR = os.path.expanduser("~/.config/multi_vpn_manager")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 AUTH_PROMPT = "__VPN_AUTH_PROMPT__"
-DESKTOP_ENTRY_NAME = "multi-vpn-manager.desktop"
 
 BROWSER_CMDS = {
     "edge": "microsoft-edge",
@@ -115,7 +113,6 @@ class VPNProfile:
     host: str                 # e.g. jb1vpn.nymbis.cloud:443
     browser: str = "edge"     # edge|chrome|chromium|firefox
     profile: str = "Default"  # browser profile (Edge/Chrome) or Firefox profile name
-    use_saml: bool = True      # toggle SAML authentication flow
     port: Optional[int] = None  # None means use default (--saml-login)
     auto_reconnect: bool = False
     interface: Optional[str] = None  # optional override for the PPP interface
@@ -131,7 +128,6 @@ class VPNProfile:
             host=d.get("host", ""),
             browser=d.get("browser", "edge"),
             profile=d.get("profile", "Default"),
-            use_saml=d.get("use_saml", True),
             port=d.get("port", None),
             auto_reconnect=d.get("auto_reconnect", False),
             interface=d.get("interface", None),
@@ -212,8 +208,6 @@ class AddEditVPNDialog(QDialog):
         self.browser_combo = QComboBox()
         self.browser_combo.addItems(["edge", "chrome", "chromium", "firefox"])
         self.profile_edit = QLineEdit()
-        self.use_saml_cb = QCheckBox("Use SAML authentication")
-        self.use_saml_cb.setChecked(True)
         self.port_spin = QSpinBox()
         self.port_spin.setRange(0, 65535)
         self.port_spin.setValue(DEFAULT_PORT)
@@ -232,7 +226,6 @@ class AddEditVPNDialog(QDialog):
         form = QFormLayout()
         form.addRow("Name", self.name_edit)
         form.addRow("FortiVPN Host (host:port)", self.host_edit)
-        form.addRow("", self.use_saml_cb)
         form.addRow("Browser", self.browser_combo)
         form.addRow("Browser Profile", self.profile_edit)
         form.addRow("Custom Port", self.port_spin)
@@ -259,7 +252,6 @@ class AddEditVPNDialog(QDialog):
             self.host_edit.setText(vpn.host)
             self.browser_combo.setCurrentText(vpn.browser)
             self.profile_edit.setText(vpn.profile or "")
-            self.use_saml_cb.setChecked(bool(vpn.use_saml))
             if vpn.port is None:
                 self.use_default_port.setChecked(True)
             else:
@@ -270,25 +262,18 @@ class AddEditVPNDialog(QDialog):
             if vpn.routes:
                 self.routes_edit.setPlainText("\n".join(vpn.routes))
 
-        self.use_saml_cb.stateChanged.connect(self._toggle_port)
         self.use_default_port.stateChanged.connect(self._toggle_port)
         self._toggle_port()
 
     def _toggle_port(self):
-        use_saml = self.use_saml_cb.isChecked()
-        self.use_default_port.setEnabled(use_saml)
-        if not use_saml:
-            if not self.use_default_port.isChecked():
-                self.use_default_port.setChecked(True)
-        self.port_spin.setEnabled(use_saml and not self.use_default_port.isChecked())
+        self.port_spin.setEnabled(not self.use_default_port.isChecked())
 
     def get_vpn(self) -> Optional[VPNProfile]:
         name = self.name_edit.text().strip()
         host = self.host_edit.text().strip()
         browser = self.browser_combo.currentText().strip()
         profile = self.profile_edit.text().strip() or "Default"
-        use_saml = self.use_saml_cb.isChecked()
-        port = None if (self.use_default_port.isChecked() or not use_saml) else int(self.port_spin.value())
+        port = None if self.use_default_port.isChecked() else int(self.port_spin.value())
         auto_reconnect = self.auto_reconnect_cb.isChecked()
         interface = self.interface_edit.text().strip() or None
         routes = [r for r in (self.routes_edit.toPlainText().splitlines()) if r.strip()]
@@ -304,7 +289,6 @@ class AddEditVPNDialog(QDialog):
             host=host,
             browser=browser,
             profile=profile,
-            use_saml=use_saml,
             port=port,
             auto_reconnect=auto_reconnect,
             interface=interface,
@@ -331,15 +315,12 @@ class VPNProcess:
         self._applied_routes: List[Tuple[str, str, bool]] = []
         self._password_cb = password_cb
         self._info_cb = info_cb
-        self._pkexec_path = shutil.which("pkexec")
 
     def _log(self, msg: str):
         ts = time.strftime("%H:%M:%S")
         self.log_queue.put(f"[{ts}] [{self.vpn.name}] {msg}")
 
     def _browser_cmd(self) -> Optional[List[str]]:
-        if not self.vpn.use_saml:
-            return None
         b = self.vpn.browser.lower()
         url = self._pending_url
         if not url:
@@ -376,14 +357,6 @@ class VPNProcess:
                 self._log(f"Error stopping: {exc}")
         self._cleanup_routes()
         self.status = "Idle"
-        self.wait_for_stop(timeout=10)
-
-    def wait_for_stop(self, timeout: Optional[float] = None):
-        thread = self.thread
-        if thread and thread.is_alive() and threading.current_thread() is not thread:
-            thread.join(timeout)
-        if self.thread and not self.thread.is_alive():
-            self.thread = None
 
     # --- internal helpers -------------------------------------------------
 
@@ -395,23 +368,20 @@ class VPNProcess:
                 break
             if not self.vpn.auto_reconnect:
                 break
-            wait_time = backoff
+            if rc == 0:
+                break
             self.status = "Reconnecting"
-            self._log(f"Connection ended (code {rc}). Reconnecting in {wait_time}s...")
-            for _ in range(wait_time):
+            self._log(f"Connection dropped (code {rc}). Reconnecting in {backoff}s...")
+            for _ in range(backoff):
                 if not self._should_run:
                     break
                 time.sleep(1)
             if not self._should_run:
                 break
-            if rc == 0:
-                backoff = 5
-            else:
-                backoff = min(backoff * 2, 60)
+            backoff = min(backoff * 2, 60)
         self.status = "Idle"
         self._cleanup_routes()
-        self.thread = None
-        
+
     def _run_once(self) -> int:
         host = self.vpn.host
         if not host:
@@ -419,22 +389,11 @@ class VPNProcess:
             self.status = "Error"
             return -1
 
-        openfortivpn_path = shutil.which("openfortivpn")
-        if not openfortivpn_path:
-            self._log("'openfortivpn' not found. Is it installed and in PATH?")
-            self.status = "Error"
-            return -1
+        saml_arg = "--saml-login" if self.vpn.port is None else f"--saml-login={self.vpn.port}"
+        base_cmd = ["openfortivpn", host, saml_arg]
 
-        base_cmd = [openfortivpn_path, host]
-        if self.vpn.use_saml:
-            if self.vpn.port is None:
-                base_cmd.append("--saml-login")
-            else:
-                base_cmd.append(f"--saml-login={self.vpn.port}")
-
-        use_pkexec = bool(self._pkexec_path)
-        if use_pkexec:
-            cmd = [self._pkexec_path] + base_cmd
+        if shutil.which("pkexec"):
+            cmd = ["pkexec"] + base_cmd
         else:
             cmd = ["sudo", "-S", "-p", AUTH_PROMPT] + base_cmd
 
@@ -449,12 +408,12 @@ class VPNProcess:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if not use_pkexec else None,
+                stdin=subprocess.PIPE,
                 bufsize=0,
                 text=True,
             )
-        except FileNotFoundError as exc:
-            self._log(f"Required binary not found: {exc}")
+        except FileNotFoundError:
+            self._log("'openfortivpn' not found. Is it installed and in PATH?")
             self.status = "Error"
             return -1
         except Exception as exc:
@@ -462,7 +421,7 @@ class VPNProcess:
             self.status = "Error"
             return -1
 
-        rc = self._monitor_process(not use_pkexec)
+        rc = self._monitor_process(cmd[0] == "sudo")
         self.proc = None
         return rc
 
@@ -504,7 +463,7 @@ class VPNProcess:
             return
         self._log(line)
 
-        if self.vpn.use_saml and ("Authenticate at" in line or "open the following URL" in line):
+        if "Authenticate at" in line or "open the following URL" in line:
             url = self._extract_url(line)
             if url:
                 self._pending_url = url
@@ -595,72 +554,47 @@ class VPNProcess:
         self._applied_routes.clear()
 
     def _run_privileged(self, cmd: List[str]) -> bool:
-        resolved_cmd = cmd[:]
-        resolved_cmd[0] = shutil.which(resolved_cmd[0]) or resolved_cmd[0]
-
-        if self._pkexec_path:
-            pkexec_cmd = [self._pkexec_path] + resolved_cmd
-            self._log(f"Running: {' '.join(pkexec_cmd)}")
-            try:
-                proc = subprocess.run(pkexec_cmd, capture_output=True, text=True)
-            except Exception as exc:
-                self._log(f"Failed to run '{resolved_cmd[0]}' with pkexec: {exc}")
-            else:
-                if proc.returncode == 0:
-                    return True
-                stderr_text = (proc.stderr or proc.stdout or "").strip()
-                if "dismissed" in stderr_text.lower() or "rejected" in stderr_text.lower():
-                    self._log("Route command cancelled from system authentication prompt.")
-                    return False
-                self._log(f"Command failed ({proc.returncode}): {stderr_text}")
-
-        sudo_cmd = ["sudo", "-n"] + resolved_cmd
-        self._log(f"Running: {' '.join(sudo_cmd)}")
+        full_cmd = ["sudo", "-n"] + cmd
+        self._log(f"Running: {' '.join(full_cmd)}")
         try:
-            proc = subprocess.run(sudo_cmd, capture_output=True, text=True)
+            proc = subprocess.run(full_cmd, capture_output=True, text=True)
         except Exception as exc:
-            self._log(f"Failed to run '{resolved_cmd[0]}' with sudo: {exc}")
+            self._log(f"Failed to run '{cmd[0]}': {exc}")
             return False
         if proc.returncode == 0:
             return True
 
-        stderr_text = (proc.stderr or "").strip()
-        stderr_lower = stderr_text.lower()
-        if any(key in stderr_lower for key in ["password", "a password is required", "authentication required"]):
+        stderr = proc.stderr.strip().lower()
+        if "password" in stderr or "a password is required" in stderr:
             self._log("Route command requires authentication.")
             if not self._password_cb:
                 self._log("Unable to escalate privileges for route command (no password handler).")
                 return False
             password = self._password_cb(
                 "Additional privileges are required to adjust custom routes.\n"
-                "Authenticate using your system prompt or enter your sudo password.",
+                "Enter your sudo password."
             )
             if password is None:
                 self._log("Route command cancelled by user.")
                 return False
             try:
-                sudo_interactive = ["sudo", "-S", "-p", AUTH_PROMPT] + resolved_cmd
-                display_cmd = ["sudo", "-S"] + resolved_cmd
-                self._log(f"Running: {' '.join(display_cmd)}")
+                self._log(f"Running: {' '.join(['sudo', '-S'] + cmd)}")
                 proc = subprocess.run(
-                    sudo_interactive,
+                    ["sudo", "-S", "-p", AUTH_PROMPT] + cmd,
                     input=password + "\n",
                     capture_output=True,
                     text=True,
                 )
             except Exception as exc:
-                self._log(f"Failed to run '{resolved_cmd[0]}' with sudo: {exc}")
+                self._log(f"Failed to run '{cmd[0]}' with sudo: {exc}")
                 return False
             if proc.returncode != 0:
-                output = (proc.stderr or proc.stdout or "").strip()
-                self._log(f"Command failed ({proc.returncode}): {output}")
+                self._log(f"Command failed ({proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
                 return False
             return True
 
-        output = (stderr_text or proc.stdout or "").strip()
-        self._log(f"Command failed ({proc.returncode}): {output}")
+        self._log(f"Command failed ({proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
         return False
-
 
     @staticmethod
     def _extract_url(line: str) -> Optional[str]:
@@ -709,12 +643,11 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels([
             "Name",
             "Host",
             "Port",
-            "SAML",
             "Browser",
             "Profile",
             "Auto",
@@ -751,13 +684,12 @@ class MainWindow(QMainWindow):
         self.table.setItem(row, 0, QTableWidgetItem(vpn.name))
         self.table.setItem(row, 1, QTableWidgetItem(vpn.host))
         self.table.setItem(row, 2, QTableWidgetItem(str(vpn.port) if vpn.port else ""))
-        self.table.setItem(row, 3, QTableWidgetItem("Yes" if vpn.use_saml else "No"))
-        self.table.setItem(row, 4, QTableWidgetItem(vpn.browser))
-        self.table.setItem(row, 5, QTableWidgetItem(vpn.profile))
-        self.table.setItem(row, 6, QTableWidgetItem("Yes" if vpn.auto_reconnect else "No"))
+        self.table.setItem(row, 3, QTableWidgetItem(vpn.browser))
+        self.table.setItem(row, 4, QTableWidgetItem(vpn.profile))
+        self.table.setItem(row, 5, QTableWidgetItem("Yes" if vpn.auto_reconnect else "No"))
 
         status_item = QTableWidgetItem(self._status_of(vpn.name))
-        self.table.setItem(row, 7, status_item)
+        self.table.setItem(row, 6, status_item)
 
         action_w = QWidget()
         hb = QHBoxLayout(action_w)
@@ -768,7 +700,7 @@ class MainWindow(QMainWindow):
         btn_disc.clicked.connect(lambda _, v=vpn: self.disconnect_vpn(v))
         hb.addWidget(btn_conn)
         hb.addWidget(btn_disc)
-        self.table.setCellWidget(row, 8, action_w)
+        self.table.setCellWidget(row, 7, action_w)
 
     def _status_of(self, name: str) -> str:
         proc = self.vpn_procs.get(name)
@@ -829,7 +761,6 @@ class MainWindow(QMainWindow):
             self._append_log(f"{vpn.name}: not running")
             return
         proc.stop()
-        proc.wait_for_stop()
         self._update_status_row(vpn.name, "Idle")
 
     def clear_cached_password(self):
@@ -870,7 +801,7 @@ class MainWindow(QMainWindow):
     def _update_status_row(self, name: str, status: str):
         for r in range(self.table.rowCount()):
             if self.table.item(r, 0) and self.table.item(r, 0).text() == name:
-                self.table.setItem(r, 7, QTableWidgetItem(status))
+                self.table.setItem(r, 6, QTableWidgetItem(status))
                 break
 
     def _append_log(self, line: str):
@@ -899,19 +830,6 @@ class MainWindow(QMainWindow):
         except queue.Empty:
             pass
 
-    def _stop_all_vpns(self):
-        procs = list(self.vpn_procs.values())
-        for proc in procs:
-            proc.stop()
-        for proc in procs:
-            proc.wait_for_stop()
-        for name in list(self.vpn_procs.keys()):
-            self._update_status_row(name, "Idle")
-
-    def closeEvent(self, event):  # type: ignore[override]
-        self._stop_all_vpns()
-        super().closeEvent(event)
-
 
 def ensure_config_exists():
     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -921,57 +839,8 @@ def ensure_config_exists():
             yaml.safe_dump(template, f, sort_keys=False)
 
 
-def install_desktop_entry():
-    try:
-        script_path = os.path.abspath(__file__)
-    except NameError:
-        return
-
-    exec_path = shlex.quote(sys.executable or "python3")
-    script_exec = shlex.quote(script_path)
-    exec_cmd = f"{exec_path} {script_exec}"
-
-    desktop_entry = """[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Multi-VPN Manager
-Comment=Manage multiple openfortivpn connections
-Exec={exec_cmd}
-Icon=network-vpn
-Terminal=false
-Categories=Network;Utility;
-StartupNotify=true
-""".format(exec_cmd=exec_cmd)
-
-    targets = [
-        (os.path.expanduser("~/.local/share/applications"), True),
-        (os.path.join(os.path.expanduser("~"), "Desktop"), False),
-    ]
-
-    for directory, create in targets:
-        try:
-            if create:
-                os.makedirs(directory, exist_ok=True)
-            elif not os.path.isdir(directory):
-                continue
-        except OSError:
-            continue
-        target_path = os.path.join(directory, DESKTOP_ENTRY_NAME)
-        try:
-            if os.path.exists(target_path):
-                with open(target_path, "r", encoding="utf-8") as existing:
-                    if existing.read() == desktop_entry:
-                        continue
-            with open(target_path, "w", encoding="utf-8") as handle:
-                handle.write(desktop_entry)
-            os.chmod(target_path, 0o755)
-        except OSError:
-            continue
-
-
 def main():
     ensure_config_exists()
-    install_desktop_entry()
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
