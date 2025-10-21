@@ -157,11 +157,13 @@ class VPNSession(QThread):
         # Capture the interface name as soon as it appears so route management
         # receives an explicit hint instead of falling back to interface
         # detection that can miss already-established PPP/TUN devices.
-        if "Interface" in line and ("ppp" in line or "tun" in line):
+        lower = line.lower()
+        if "interface" in lower and ("ppp" in lower or "tun" in lower):
             parts = line.split()
             for part in parts:
-                if part.startswith("ppp") or part.startswith("tun"):
-                    self._interface_name = part
+                candidate = part.strip(":,.")
+                if candidate.startswith("ppp") or candidate.startswith("tun"):
+                    self._interface_name = candidate
                     break
         if self.profile.auth_type.lower() == "saml":
             if not self._browser_launched and ("Authenticate" in line or "browser" in line.lower()):
