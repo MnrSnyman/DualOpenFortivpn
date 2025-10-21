@@ -109,7 +109,7 @@ elif [ -d "$APPDIR" ]; then
   echo "[INFO] Using existing directory at $APPDIR (skipping clone)"
 else
   echo "[INFO] Cloning OpenFortiVPN Manager into $APPDIR"
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git clone --depth 1 https://github.com/openfortivpn/openfortivpn-manager.git "$APPDIR" || {
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git clone --depth 1 https://github.com/MnrSnyman/OpenFortiVPN-Manager.git "$APPDIR" || {
     echo "[ERROR] Failed to clone repository anonymously." >&2
     exit 1
   }
@@ -148,7 +148,7 @@ echo "[SUCCESS] Installation complete. Launch with: python3 -m openfortivpn_gui"
 ### Running the Application
 
 ```bash
-git clone https://github.com/openfortivpn/openfortivpn-manager.git
+git clone https://github.com/MnrSnyman/OpenFortiVPN-Manager.git
 cd openfortivpn-manager
 # Activate the virtual environment if you created one:
 source .venv/bin/activate 2>/dev/null || true
