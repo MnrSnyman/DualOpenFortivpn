@@ -99,7 +99,50 @@ python3 -m pip install --user --upgrade PyQt6 PyYAML cryptography requests
 Run this single command to clone the repository, detect your distribution, install system prerequisites, and install Python dependencies using `pip --user`:
 
 ```bash
-bash -c 'set -euo pipefail; APPDIR="${APPDIR:-$HOME/openfortivpn-manager}"; [ -d "$APPDIR" ] || git clone https://github.com/openfortivpn/openfortivpn-manager.git "$APPDIR"; cd "$APPDIR"; . /etc/os-release; case "$ID" in ubuntu|debian) sudo apt update && sudo apt install -y python3 python3-pip python3-venv openfortivpn policykit-1 libegl1 libgl1 libnotify-bin ;; fedora|rhel|centos) sudo dnf install -y python3 python3-pip python3-virtualenv openfortivpn polkit mesa-libEGL mesa-libGL libnotify ;; arch|manjaro) sudo pacman -Syu --needed python python-pip python-virtualenv openfortivpn polkit libegl libglvnd libnotify ;; *) echo "Unsupported distribution: $ID" >&2; exit 1 ;; esac; python3 -m pip install --user --upgrade pip; python3 -m pip install --user --upgrade PyQt6 PyYAML cryptography requests'
+bash -c '
+set -euo pipefail
+APPDIR="${APPDIR:-$HOME/openfortivpn-manager}"
+
+if [ -d "$APPDIR/.git" ]; then
+  echo "[INFO] Repository already present at $APPDIR"
+elif [ -d "$APPDIR" ]; then
+  echo "[INFO] Using existing directory at $APPDIR (skipping clone)"
+else
+  echo "[INFO] Cloning OpenFortiVPN Manager into $APPDIR"
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git clone --depth 1 https://github.com/openfortivpn/openfortivpn-manager.git "$APPDIR" || {
+    echo "[ERROR] Failed to clone repository anonymously." >&2
+    exit 1
+  }
+fi
+
+cd "$APPDIR"
+. /etc/os-release
+
+case "$ID" in
+  ubuntu|debian)
+    echo "[INFO] Installing packages via apt"
+    sudo apt update
+    sudo apt install -y python3 python3-pip python3-venv openfortivpn policykit-1 libegl1 libgl1 libnotify-bin
+    ;;
+  fedora|rhel|centos)
+    echo "[INFO] Installing packages via dnf"
+    sudo dnf install -y python3 python3-pip python3-virtualenv openfortivpn polkit mesa-libEGL mesa-libGL libnotify
+    ;;
+  arch|manjaro)
+    echo "[INFO] Installing packages via pacman"
+    sudo pacman -Syu --needed python python-pip python-virtualenv openfortivpn polkit libegl libglvnd libnotify
+    ;;
+  *)
+    echo "[ERROR] Unsupported distribution: $ID" >&2
+    exit 1
+    ;;
+esac
+
+python3 -m pip install --user --upgrade pip
+python3 -m pip install --user --upgrade PyQt6 PyYAML cryptography requests
+
+echo "[SUCCESS] Installation complete. Launch with: python3 -m openfortivpn_gui"
+'
 ```
 
 ### Running the Application
