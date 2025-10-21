@@ -51,11 +51,10 @@ class MainWindow(QMainWindow):
         self.config_manager = ConfigManager()
         self.keyring_manager = KeyringManager()
         self.logging_manager = get_logging_manager()
-        self.logging_manager.logger.info("Using PyQt version: %s", QT_VERSION)
+        history_snapshot = list(self.logging_manager.history())
         self._log_emitter = _LogEmitter()
         self._log_emitter.log_received.connect(self._append_log)
         self._log_listener = lambda message: self._log_emitter.log_received.emit(message)
-        self.logging_manager.add_listener(self._log_listener)
 
         self.browsers = detect_browsers()
         self.browser_catalog: Dict[str, BrowserInfo] = {browser.key: browser for browser in self.browsers}
@@ -65,6 +64,11 @@ class MainWindow(QMainWindow):
         self.session_status: Dict[str, str] = {}
         self.profile_rows: Dict[str, int] = {}
 
+        self._build_ui()
+        for entry in history_snapshot:
+            self._append_log(entry)
+        self.logging_manager.add_listener(self._log_listener)
+        self.logging_manager.logger.info("Using PyQt version: %s", QT_VERSION)
         if self.privilege_manager.has_pkexec():
             self.logging_manager.logger.info("pkexec detected; using pkexec for privileged operations.")
         else:
@@ -76,11 +80,7 @@ class MainWindow(QMainWindow):
                 browser.name,
                 profile_count,
             )
-
-        self._build_ui()
         self._populate_table()
-        for entry in self.logging_manager.history():
-            self._append_log(entry)
 
     def _build_ui(self) -> None:
         toolbar = QToolBar()
