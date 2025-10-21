@@ -23,39 +23,111 @@ cleanup, and an elegant UI inspired by Uptime Kuma.
 
 ## Installation
 
-### Ubuntu / Debian
+Prerequisites
+Python 3.9 or newer with pip available (verify with python3 -V and pip3 -V).
+The openfortivpn binary installed on your PATH (verify with openfortivpn --version).
+Sudo access so the manager can configure tunnels, routing, and DNS when you connect.
 
-```bash
+Quick Install
+Choose an installation directory and fetch the source:
+APPDIR="$HOME/openfortivpn-manager"
+git clone https://github.com/openfortivpn/openfortivpn-manager.git "$APPDIR"
+cd "$APPDIR"
+Keep APPDIR defined for later commands or substitute your chosen directory path if you open a new shell.
+
+Install system packages required for Qt, notifications, and the VPN client:
+Ubuntu / Debian
 sudo apt update
-sudo apt install python3 python3-pip openfortivpn resolvconf libnotify-bin
-pip install -r requirements.txt
-```
+sudo apt install -y python3 python3-pip python3-venv openfortivpn resolvconf libnotify-bin
 
-### Fedora / RHEL
+Fedora / RHEL
+sudo dnf install -y python3 python3-pip python3-virtualenv openfortivpn NetworkManager-openfortivpn libnotify
 
-```bash
-sudo dnf install python3 python3-pip openfortivpn NetworkManager-openfortivpn
-pip install -r requirements.txt
-```
+Arch / Manjaro
+sudo pacman -Syu --needed python python-pip python-virtualenv openfortivpn networkmanager-fortisslvpn libnotify
 
-### Arch / Manjaro
+Create an isolated virtual environment (recommended):
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --upgrade -r requirements.txt
 
-```bash
-sudo pacman -S python python-pip openfortivpn networkmanager-fortisslvpn
-pip install -r requirements.txt
-```
+If you prefer a per-user install without a virtual environment, run:
+python3 -m pip install --user --upgrade pip
+python3 -m pip install --user --upgrade -r requirements.txt
 
-After installing dependencies, run the application with:
-
-```bash
+First Run
+Activate the virtual environment for each new shell with source "$APPDIR/.venv/bin/activate" (replace APPDIR with the directory you chose if the variable is not set).
+Start the graphical interface:
 python -m openfortivpn_gui
-```
-
-To invoke the CLI companion, use:
-
-```bash
+Start the CLI companion:
 python -m openfortivpn_gui --cli list
-```
+The first time you connect to a VPN, sudo will prompt for your password so openfortivpn can create the tunnel.
+
+Create Desktop Launcher (Optional)
+Create a helper script that launches the manager from the installation directory:
+mkdir -p "$HOME/.local/bin"
+cat <<'EOF' > "$HOME/.local/bin/openfortivpn-gui"
+#!/usr/bin/env bash
+APPDIR="${APPDIR:-$HOME/openfortivpn-manager}"
+if [ -d "$APPDIR/.venv" ]; then
+  source "$APPDIR/.venv/bin/activate"
+fi
+cd "$APPDIR"
+python -m openfortivpn_gui "$@"
+EOF
+chmod +x "$HOME/.local/bin/openfortivpn-gui"
+
+Add a desktop entry so the GUI appears in your application menu:
+mkdir -p "$HOME/.local/share/applications"
+cat <<EOF > "$HOME/.local/share/applications/openfortivpn-gui.desktop"
+[Desktop Entry]
+Type=Application
+Name=OpenFortiVPN Manager
+Exec=$HOME/.local/bin/openfortivpn-gui
+Icon=network-vpn
+Categories=Network;Security;
+Terminal=false
+EOF
+chmod +x "$HOME/.local/share/applications/openfortivpn-gui.desktop"
+update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+
+Verify Installation
+With the virtual environment active, run python -m openfortivpn_gui --cli list to ensure the CLI loads without errors.
+Launch the GUI and confirm that no missing-dependency warning appears; if openfortivpn is not detected, the window will display the package manager command you need.
+Double-check that command -v openfortivpn prints the path to the VPN client.
+
+Troubleshooting Tip
+If any step fails, review the Troubleshooting section below and make sure every dependency above is installed before launching the manager.
+
+Advanced one-liner
+bash -c '
+set -euo pipefail
+APPDIR="${APPDIR:-$HOME/openfortivpn-manager}"
+if [ ! -d "$APPDIR" ]; then
+  git clone https://github.com/openfortivpn/openfortivpn-manager.git "$APPDIR"
+fi
+cd "$APPDIR"
+. /etc/os-release
+case "$ID" in
+  ubuntu|debian)
+    sudo apt update
+    sudo apt install -y python3 python3-pip python3-venv openfortivpn resolvconf libnotify-bin
+    ;;
+  fedora|rhel|centos)
+    sudo dnf install -y python3 python3-pip python3-virtualenv openfortivpn NetworkManager-openfortivpn libnotify
+    ;;
+  arch|manjaro)
+    sudo pacman -Syu --needed python python-pip python-virtualenv openfortivpn networkmanager-fortisslvpn libnotify
+    ;;
+  *)
+    echo "Unsupported distribution: $ID" >&2
+    exit 1
+    ;;
+esac
+python3 -m pip install --user --upgrade pip
+python3 -m pip install --user --upgrade -r requirements.txt
+'
 
 ## Configuration
 
