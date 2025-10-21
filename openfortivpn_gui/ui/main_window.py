@@ -7,11 +7,122 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..core.connection import ConnectionState
 from ..core.manager import ConnectionManager
 from ..core.profile import VPNProfile
-from ..core.connection import ConnectionState
 from ..utils import browsers
 from ..utils.logging import session_log_path
+
+DARK_QSS = """
+QWidget {
+    background-color: #1E1E2F;
+    color: #FFFFFF;
+    font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 14px;
+}
+QTreeWidget, QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {
+    background-color: #232336;
+    border: 1px solid #2F2F44;
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: #FFFFFF;
+}
+QHeaderView::section {
+    background-color: #232336;
+    color: #CCCCCC;
+    padding: 8px 12px;
+    border: none;
+    font-weight: 600;
+}
+QPushButton {
+    background-color: #0078D4;
+    border: none;
+    border-radius: 8px;
+    color: #FFFFFF;
+    padding: 6px 16px;
+}
+QPushButton:hover {
+    background-color: #1890F0;
+}
+QPushButton:disabled {
+    background-color: #30304A;
+    color: #8E8EA0;
+}
+QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
+    color: #777799;
+}
+QToolTip {
+    background-color: #232336;
+    color: #FFFFFF;
+    border: 1px solid #0078D4;
+    padding: 6px;
+}
+"""
+
+LIGHT_QSS = """
+QWidget {
+    background-color: #F5F7FA;
+    color: #1E1E2F;
+    font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 14px;
+}
+QTreeWidget, QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #D0D4E4;
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: #1E1E2F;
+}
+QHeaderView::section {
+    background-color: #EBEEF5;
+    color: #1E1E2F;
+    padding: 8px 12px;
+    border: none;
+    font-weight: 600;
+}
+QPushButton {
+    background-color: #0078D4;
+    border: none;
+    border-radius: 8px;
+    color: #FFFFFF;
+    padding: 6px 16px;
+}
+QPushButton:hover {
+    background-color: #1890F0;
+}
+QPushButton:disabled {
+    background-color: #C8CCDB;
+    color: #656A7E;
+}
+QToolTip {
+    background-color: #1E1E2F;
+    color: #FFFFFF;
+    border: 1px solid #0078D4;
+    padding: 6px;
+}
+"""
+
+COLUMN_NAME = 0
+COLUMN_STATUS = 1
+COLUMN_HOST = 2
+COLUMN_IP = 3
+COLUMN_INTERFACE = 4
+COLUMN_RX = 5
+COLUMN_TX = 6
+COLUMN_AUTORECONNECT = 7
+COLUMN_ACTIONS = 8
+
+
+def _status_icon(color: str) -> QtGui.QIcon:
+    pixmap = QtGui.QPixmap(16, 16)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(color)))
+    painter.drawEllipse(2, 2, 12, 12)
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 class ProfileEditorDialog(QtWidgets.QDialog):
@@ -20,6 +131,8 @@ class ProfileEditorDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, profile: VPNProfile | None = None):
         super().__init__(parent)
         self.setWindowTitle("VPN Profile")
+        self.setModal(True)
+        self.setMinimumWidth(420)
         self.profile = profile
         self._build_ui()
         if profile:
@@ -27,28 +140,44 @@ class ProfileEditorDialog(QtWidgets.QDialog):
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QFormLayout(self)
+        layout.setSpacing(12)
+
         self.name_edit = QtWidgets.QLineEdit()
         self.host_edit = QtWidgets.QLineEdit()
         self.port_spin = QtWidgets.QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(443)
+
         self.saml_checkbox = QtWidgets.QCheckBox("Use SAML authentication")
         self.saml_port_spin = QtWidgets.QSpinBox()
         self.saml_port_spin.setRange(1024, 65000)
         self.saml_port_spin.setValue(8021)
+
         self.browser_combo = QtWidgets.QComboBox()
+        self.browser_combo.addItem("System default", userData=None)
         for browser in browsers.detect_browsers():
-            self.browser_combo.addItem(browser)
+            if browser == "default":
+                continue
+            display = browser.replace("-", " ").title()
+            self.browser_combo.addItem(display, userData=browser)
+
         self.browser_profile_combo = QtWidgets.QComboBox()
+        self.browser_profile_combo.addItem("Automatic", userData=None)
+
         self.username_edit = QtWidgets.QLineEdit()
         self.password_edit = QtWidgets.QLineEdit()
-        self.password_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.password_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+
         self.auto_reconnect_checkbox = QtWidgets.QCheckBox("Auto reconnect")
         self.reconnect_spin = QtWidgets.QSpinBox()
         self.reconnect_spin.setRange(5, 3600)
         self.reconnect_spin.setValue(15)
+
         self.routing_edit = QtWidgets.QPlainTextEdit()
+        self.routing_edit.setPlaceholderText("10.10.0.0/24\ncorp.internal")
         self.dns_edit = QtWidgets.QPlainTextEdit()
+        self.dns_edit.setPlaceholderText("1.1.1.1\n8.8.8.8")
+
         self.persistent_checkbox = QtWidgets.QCheckBox("Use --persistent reconnect mode")
         self.persistent_checkbox.setChecked(True)
 
@@ -67,13 +196,15 @@ class ProfileEditorDialog(QtWidgets.QDialog):
         layout.addRow("Custom DNS (one per line)", self.dns_edit)
         layout.addRow(self.persistent_checkbox)
 
-        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        layout.addRow(button_box)
 
         self.saml_checkbox.stateChanged.connect(self._update_auth_controls)
-        self.browser_combo.currentTextChanged.connect(self._populate_browser_profiles)
+        self.browser_combo.currentIndexChanged.connect(self._on_browser_changed)
         self._update_auth_controls()
 
     def _populate(self, profile: VPNProfile) -> None:
@@ -82,15 +213,15 @@ class ProfileEditorDialog(QtWidgets.QDialog):
         self.port_spin.setValue(profile.port)
         self.saml_checkbox.setChecked(profile.enable_saml)
         self.saml_port_spin.setValue(profile.saml_port)
+
         if profile.browser:
-            index = self.browser_combo.findText(profile.browser)
+            index = self.browser_combo.findData(profile.browser)
             if index >= 0:
                 self.browser_combo.setCurrentIndex(index)
-            self._populate_browser_profiles(profile.browser)
-        if profile.browser_profile:
-            index = self.browser_profile_combo.findText(profile.browser_profile)
-            if index >= 0:
-                self.browser_profile_combo.setCurrentIndex(index)
+        else:
+            self.browser_combo.setCurrentIndex(0)
+        self._populate_browser_profiles(self.browser_combo.currentData(), profile.browser_profile)
+
         if profile.username:
             self.username_edit.setText(profile.username)
         if profile.password:
@@ -102,21 +233,41 @@ class ProfileEditorDialog(QtWidgets.QDialog):
         self.persistent_checkbox.setChecked(profile.persistent)
 
     def _update_auth_controls(self) -> None:
-        saml = self.saml_checkbox.isChecked()
-        for widget in [self.username_edit, self.password_edit]:
-            widget.setEnabled(not saml)
-        self.saml_port_spin.setEnabled(saml)
-        self.browser_combo.setEnabled(saml)
-        self.browser_profile_combo.setEnabled(saml)
-        if saml:
-            self._populate_browser_profiles(self.browser_combo.currentText())
+        saml_enabled = self.saml_checkbox.isChecked()
+        self.saml_port_spin.setEnabled(saml_enabled)
+        self.browser_combo.setEnabled(saml_enabled)
+        self.browser_profile_combo.setEnabled(saml_enabled)
+        self.username_edit.setEnabled(not saml_enabled)
+        self.password_edit.setEnabled(not saml_enabled)
+        if saml_enabled:
+            self._populate_browser_profiles(self.browser_combo.currentData())
+
+    def _on_browser_changed(self) -> None:
+        self._populate_browser_profiles(self.browser_combo.currentData())
+
+    def _populate_browser_profiles(self, browser_name: str | None, selected: str | None = None) -> None:
+        self.browser_profile_combo.blockSignals(True)
+        self.browser_profile_combo.clear()
+        self.browser_profile_combo.addItem("Automatic", userData=None)
+        if browser_name:
+            for profile_name in browsers.detect_profiles(browser_name):
+                self.browser_profile_combo.addItem(profile_name, userData=profile_name)
+        if selected:
+            index = self.browser_profile_combo.findData(selected)
+            if index >= 0:
+                self.browser_profile_combo.setCurrentIndex(index)
+            else:
+                self.browser_profile_combo.addItem(selected, userData=selected)
+                self.browser_profile_combo.setCurrentIndex(self.browser_profile_combo.count() - 1)
+        self.browser_profile_combo.blockSignals(False)
 
     def get_profile(self) -> VPNProfile | None:
-        if self.exec() != QtWidgets.QDialog.Accepted:
+        if self.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return None
-        browser_name = self.browser_combo.currentText() or None
-        if browser_name == "default":
-            browser_name = None
+
+        browser_name = self.browser_combo.currentData()
+        browser_profile = self.browser_profile_combo.currentData()
+
         profile = VPNProfile(
             name=self.name_edit.text().strip(),
             host=self.host_edit.text().strip(),
@@ -124,7 +275,7 @@ class ProfileEditorDialog(QtWidgets.QDialog):
             enable_saml=self.saml_checkbox.isChecked(),
             saml_port=self.saml_port_spin.value(),
             browser=browser_name,
-            browser_profile=self.browser_profile_combo.currentText() or None,
+            browser_profile=browser_profile,
             username=self.username_edit.text().strip() or None,
             password=self.password_edit.text().strip() or None,
             auto_reconnect=self.auto_reconnect_checkbox.isChecked(),
@@ -133,22 +284,17 @@ class ProfileEditorDialog(QtWidgets.QDialog):
             custom_dns=[line.strip() for line in self.dns_edit.toPlainText().splitlines() if line.strip()],
             persistent=self.persistent_checkbox.isChecked(),
         )
+        if not profile.enable_saml:
+            profile.browser = None
+            profile.browser_profile = None
         return profile
-
-    def _populate_browser_profiles(self, browser_name: str | None = None) -> None:
-        if browser_name is None:
-            browser_name = self.browser_combo.currentText()
-        self.browser_profile_combo.clear()
-        if not browser_name or browser_name == "default":
-            return
-        for profile in browsers.detect_profiles(browser_name):
-            self.browser_profile_combo.addItem(profile)
 
 
 class LogViewer(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, log_path: Path) -> None:
         super().__init__(parent)
         self.setWindowTitle("Session Log")
+        self.setMinimumSize(640, 420)
         layout = QtWidgets.QVBoxLayout(self)
         self.text = QtWidgets.QPlainTextEdit()
         self.text.setReadOnly(True)
@@ -165,14 +311,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.manager = manager
         self.loop = loop
         self.setWindowTitle("OpenFortiVPN Manager")
-        self.resize(900, 600)
+        self.resize(1024, 640)
+        self.settings = QtCore.QSettings("OpenFortiVPN", "Manager")
+        self._row_buttons: dict[str, tuple[QtWidgets.QPushButton, QtWidgets.QPushButton]] = {}
+        self.status_icons = {
+            ConnectionState.CONNECTED: _status_icon("#3CC480"),
+            ConnectionState.CONNECTING: _status_icon("#F1C933"),
+            ConnectionState.DISCONNECTED: _status_icon("#FF616D"),
+            ConnectionState.ERROR: _status_icon("#8E8EA0"),
+            ConnectionState.RECONNECTING: _status_icon("#F1C933"),
+        }
         self._build_ui()
+        stored_theme = self.settings.value("appearance/theme", "dark")
+        self._apply_theme(stored_theme if stored_theme in {"dark", "light"} else "dark")
         self._setup_tray()
         self._refresh_profiles()
         self._show_dependency_warnings()
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._refresh_statuses)
-        self.timer.start(2000)
+        self.timer.start(1500)
         self._update_future = asyncio.run_coroutine_threadsafe(self.manager.check_for_updates(), self.loop)
         self.update_check_timer = QtCore.QTimer(self)
         self.update_check_timer.setSingleShot(True)
@@ -183,8 +340,12 @@ class MainWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
+        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
 
         header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setSpacing(12)
+
         self.add_button = QtWidgets.QPushButton("Add")
         self.edit_button = QtWidgets.QPushButton("Edit")
         self.delete_button = QtWidgets.QPushButton("Delete")
@@ -193,40 +354,76 @@ class MainWindow(QtWidgets.QMainWindow):
         self.disconnect_button = QtWidgets.QPushButton("Disconnect")
         self.export_button = QtWidgets.QPushButton("Export")
         self.import_button = QtWidgets.QPushButton("Import")
-        self.theme_toggle = QtWidgets.QPushButton("Toggle Theme")
+        self.log_button = QtWidgets.QPushButton("View Logs")
+        self.theme_toggle = QtWidgets.QPushButton()
 
-        for button in [
-            self.add_button,
-            self.edit_button,
-            self.delete_button,
-            self.duplicate_button,
-            self.connect_button,
-            self.disconnect_button,
-            self.export_button,
-            self.import_button,
-            self.theme_toggle,
+        for button, tooltip in [
+            (self.add_button, "Create a new VPN profile"),
+            (self.edit_button, "Edit the selected profile"),
+            (self.delete_button, "Delete the selected profile"),
+            (self.duplicate_button, "Clone the selected profile"),
+            (self.connect_button, "Connect the selected profile"),
+            (self.disconnect_button, "Disconnect the selected profile"),
+            (self.export_button, "Export all profiles"),
+            (self.import_button, "Import profiles from file"),
+            (self.log_button, "View logs for the selected profile"),
         ]:
-            header_layout.addWidget(button)
-        header_layout.addStretch()
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(tooltip)
+
+        self.theme_toggle.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+
+        header_layout.addWidget(self.add_button)
+        header_layout.addWidget(self.edit_button)
+        header_layout.addWidget(self.delete_button)
+        header_layout.addWidget(self.duplicate_button)
+        header_layout.addWidget(self.connect_button)
+        header_layout.addWidget(self.disconnect_button)
+        header_layout.addWidget(self.export_button)
+        header_layout.addWidget(self.import_button)
+        header_layout.addWidget(self.log_button)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.theme_toggle)
 
         layout.addLayout(header_layout)
 
         self.profile_view = QtWidgets.QTreeWidget()
-        self.profile_view.setHeaderLabels([
-            "Name",
-            "Status",
-            "Host",
-            "IP",
-            "Interface",
-            "RX bytes",
-            "TX bytes",
-            "Auto reconnect",
-        ])
-        self.profile_view.header().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.profile_view)
+        self.profile_view.setAlternatingRowColors(True)
+        self.profile_view.setRootIsDecorated(False)
+        self.profile_view.setIndentation(0)
+        self.profile_view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.profile_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.profile_view.setUniformRowHeights(True)
+        self.profile_view.setMouseTracking(True)
+        self.profile_view.setColumnCount(9)
+        self.profile_view.setHeaderLabels(
+            [
+                "Name",
+                "Status",
+                "Host",
+                "IP",
+                "Interface",
+                "RX bytes",
+                "TX bytes",
+                "Auto reconnect",
+                "Actions",
+            ]
+        )
+        header = self.profile_view.header()
+        header.setSectionResizeMode(COLUMN_NAME, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COLUMN_STATUS, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_HOST, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_IP, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_INTERFACE, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_RX, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_TX, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_AUTORECONNECT, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COLUMN_ACTIONS, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.profile_view, stretch=1)
 
-        self.log_button = QtWidgets.QPushButton("View Logs")
-        layout.addWidget(self.log_button)
+        footer_layout = QtWidgets.QHBoxLayout()
+        footer_layout.addStretch(1)
+        layout.addLayout(footer_layout)
 
         self.add_button.clicked.connect(self._add_profile)
         self.edit_button.clicked.connect(self._edit_profile)
@@ -234,10 +431,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.duplicate_button.clicked.connect(self._duplicate_profile)
         self.connect_button.clicked.connect(self._connect_selected)
         self.disconnect_button.clicked.connect(self._disconnect_selected)
-        self.log_button.clicked.connect(self._show_logs)
         self.export_button.clicked.connect(self._export_profiles)
         self.import_button.clicked.connect(self._import_profiles)
+        self.log_button.clicked.connect(self._show_logs)
         self.theme_toggle.clicked.connect(self._toggle_theme)
+        self.profile_view.itemSelectionChanged.connect(self._update_toolbar_state)
+        self.profile_view.itemDoubleClicked.connect(lambda *_: self._edit_profile())
 
     def _setup_tray(self) -> None:
         self.tray = QtWidgets.QSystemTrayIcon(QtGui.QIcon.fromTheme("network-vpn"), self)
@@ -249,44 +448,140 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tray.setContextMenu(menu)
         self.tray.show()
 
+    def _apply_theme(self, theme: str) -> None:
+        app = QtWidgets.QApplication.instance()
+        if not app:
+            return
+        stylesheet = DARK_QSS if theme == "dark" else LIGHT_QSS
+        app.setStyle("Fusion")
+        app.setStyleSheet(stylesheet)
+        self.current_theme = theme
+        self.settings.setValue("appearance/theme", theme)
+        if theme == "dark":
+            self.theme_toggle.setText("Light Mode")
+            self.theme_toggle.setToolTip("Switch to light theme")
+        else:
+            self.theme_toggle.setText("Dark Mode")
+            self.theme_toggle.setToolTip("Switch to dark theme")
+
     def _refresh_profiles(self) -> None:
         self.profile_view.clear()
-        for profile in self.manager.list_profiles():
-            item = QtWidgets.QTreeWidgetItem([
-                profile.name,
-                "Disconnected",
-                f"{profile.host}:{profile.port}",
-                "-",
-                "-",
-                "0",
-                "0",
-                "Yes" if profile.auto_reconnect else "No",
-            ])
+        self._row_buttons.clear()
+        profiles = sorted(self.manager.list_profiles(), key=lambda p: p.name.lower())
+        for profile in profiles:
+            item = QtWidgets.QTreeWidgetItem(
+                [
+                    profile.name,
+                    "Disconnected",
+                    f"{profile.host}:{profile.port}",
+                    "-",
+                    "-",
+                    "0",
+                    "0",
+                    "Yes" if profile.auto_reconnect else "No",
+                    "",
+                ]
+            )
+            item.setData(COLUMN_NAME, QtCore.Qt.ItemDataRole.UserRole, profile.name)
+            item.setIcon(COLUMN_STATUS, self.status_icons[ConnectionState.DISCONNECTED])
+            item.setToolTip(COLUMN_NAME, profile.display_name())
+            item.setSizeHint(COLUMN_NAME, QtCore.QSize(0, 48))
             self.profile_view.addTopLevelItem(item)
-        self.profile_view.sortItems(0, QtCore.Qt.SortOrder.AscendingOrder)
+            self._add_row_actions(item, profile.name)
+        self.profile_view.sortItems(COLUMN_NAME, QtCore.Qt.SortOrder.AscendingOrder)
+        self._update_toolbar_state()
+
+    def _add_row_actions(self, item: QtWidgets.QTreeWidgetItem, profile_name: str) -> None:
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        connect_btn = QtWidgets.QPushButton("Connect")
+        disconnect_btn = QtWidgets.QPushButton("Disconnect")
+        connect_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        disconnect_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        connect_btn.setToolTip(f"Connect {profile_name}")
+        disconnect_btn.setToolTip(f"Disconnect {profile_name}")
+        disconnect_btn.setEnabled(False)
+
+        connect_btn.clicked.connect(lambda _, n=profile_name: self._connect_profile(n))
+        disconnect_btn.clicked.connect(lambda _, n=profile_name: self._disconnect_profile(n))
+
+        layout.addWidget(connect_btn)
+        layout.addWidget(disconnect_btn)
+        container.setLayout(layout)
+        self.profile_view.setItemWidget(item, COLUMN_ACTIONS, container)
+        self._row_buttons[profile_name] = (connect_btn, disconnect_btn)
 
     def _refresh_statuses(self) -> None:
         for row in range(self.profile_view.topLevelItemCount()):
             item = self.profile_view.topLevelItem(row)
-            name = item.text(0)
+            name = item.data(COLUMN_NAME, QtCore.Qt.ItemDataRole.UserRole)
+            if not name:
+                continue
             status = self.manager.get_status(name)
             if not status:
                 continue
-            state_text = status.state.value
+            state_text = status.state.value.capitalize()
             if status.state == ConnectionState.RECONNECTING and status.reconnect_in is not None:
-                state_text = f"reconnecting ({status.reconnect_in}s)"
-            item.setText(1, state_text)
-            item.setText(3, status.ip_address or "-")
-            item.setText(4, status.interface or "-")
-            item.setText(5, f"{status.bandwidth_in:.0f}")
-            item.setText(6, f"{status.bandwidth_out:.0f}")
-            item.setText(7, "Yes" if status.auto_reconnect else "No")
+                state_text = f"Reconnecting ({status.reconnect_in}s)"
+            elif status.state == ConnectionState.ERROR and status.last_error:
+                state_text = status.last_error
+
+            icon = self.status_icons.get(status.state, self.status_icons[ConnectionState.DISCONNECTED])
+            item.setText(COLUMN_STATUS, state_text)
+            item.setIcon(COLUMN_STATUS, icon)
+            item.setText(COLUMN_IP, status.ip_address or "-")
+            item.setText(COLUMN_INTERFACE, status.interface or "-")
+            item.setText(COLUMN_RX, f"{status.bandwidth_in:.0f}")
+            item.setText(COLUMN_TX, f"{status.bandwidth_out:.0f}")
+            item.setText(COLUMN_AUTORECONNECT, "Yes" if status.auto_reconnect else "No")
+            self._update_row_buttons(name, status)
+        self._update_toolbar_state()
+
+    def _update_row_buttons(self, profile_name: str, status) -> None:
+        buttons = self._row_buttons.get(profile_name)
+        if not buttons:
+            return
+        connect_btn, disconnect_btn = buttons
+
+        if status.state == ConnectionState.CONNECTED:
+            connect_btn.setEnabled(False)
+            connect_btn.setText("Connected")
+            connect_btn.setToolTip(f"{profile_name} is connected")
+            disconnect_btn.setEnabled(True)
+            disconnect_btn.setToolTip(f"Disconnect {profile_name}")
+        elif status.state in {ConnectionState.CONNECTING, ConnectionState.RECONNECTING}:
+            connect_btn.setEnabled(False)
+            connect_btn.setText("Connecting…")
+            connect_btn.setToolTip(f"{profile_name} is establishing a tunnel")
+            disconnect_btn.setEnabled(True)
+            disconnect_btn.setToolTip(f"Cancel connection for {profile_name}")
+        elif status.state == ConnectionState.ERROR:
+            connect_btn.setEnabled(True)
+            connect_btn.setText("Retry")
+            connect_btn.setToolTip(status.last_error or f"Retry connection for {profile_name}")
+            disconnect_btn.setEnabled(False)
+            disconnect_btn.setToolTip(f"{profile_name} is not connected")
+        else:
+            connect_btn.setEnabled(True)
+            connect_btn.setText("Connect")
+            connect_btn.setToolTip(f"Connect {profile_name}")
+            disconnect_btn.setEnabled(False)
+            disconnect_btn.setToolTip(f"{profile_name} is not connected")
 
     def _selected_profile_name(self) -> str | None:
         items = self.profile_view.selectedItems()
         if not items:
             return None
-        return items[0].text(0)
+        return items[0].data(COLUMN_NAME, QtCore.Qt.ItemDataRole.UserRole)
+
+    def _connect_profile(self, name: str) -> None:
+        asyncio.run_coroutine_threadsafe(self.manager.connect(name), self.loop)
+
+    def _disconnect_profile(self, name: str) -> None:
+        asyncio.run_coroutine_threadsafe(self.manager.disconnect(name), self.loop)
 
     def _add_profile(self) -> None:
         dialog = ProfileEditorDialog(self)
@@ -305,6 +600,13 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = ProfileEditorDialog(self, profile)
         updated = dialog.get_profile()
         if updated:
+            if updated.name != name and name in self.manager.connections:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Cannot rename profile",
+                    "Disconnect the VPN before renaming the profile.",
+                )
+                return
             self.manager.add_or_update_profile(updated)
             self._refresh_profiles()
 
@@ -312,8 +614,8 @@ class MainWindow(QtWidgets.QMainWindow):
         name = self._selected_profile_name()
         if not name:
             return
-        reply = QtWidgets.QMessageBox.question(self, "Delete", f"Delete profile {name}?")
-        if reply == QtWidgets.QMessageBox.Yes:
+        reply = QtWidgets.QMessageBox.question(self, "Delete profile", f"Delete profile {name}?")
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             try:
                 self.manager.delete_profile(name)
             except RuntimeError as exc:
@@ -327,7 +629,12 @@ class MainWindow(QtWidgets.QMainWindow):
         profile = self.manager.profiles.get(name)
         if not profile:
             return
-        new_name, ok = QtWidgets.QInputDialog.getText(self, "Duplicate profile", "New profile name:", text=f"{name} copy")
+        new_name, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Duplicate profile",
+            "New profile name:",
+            text=f"{name} copy",
+        )
         if not ok or not new_name.strip():
             return
         clone = VPNProfile.from_dict(profile.to_dict())
@@ -339,13 +646,13 @@ class MainWindow(QtWidgets.QMainWindow):
         name = self._selected_profile_name()
         if not name:
             return
-        asyncio.run_coroutine_threadsafe(self.manager.connect(name), self.loop)
+        self._connect_profile(name)
 
     def _disconnect_selected(self) -> None:
         name = self._selected_profile_name()
         if not name:
             return
-        asyncio.run_coroutine_threadsafe(self.manager.disconnect(name), self.loop)
+        self._disconnect_profile(name)
 
     def _show_logs(self) -> None:
         name = self._selected_profile_name()
@@ -355,31 +662,54 @@ class MainWindow(QtWidgets.QMainWindow):
         LogViewer(self, log_path).exec()
 
     def _export_profiles(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export profiles", "profiles.json", "JSON (*.json);;YAML (*.yml)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export profiles",
+            "profiles.json",
+            "JSON (*.json);;YAML (*.yml)",
+        )
         if path:
             self.manager.export_profiles(Path(path))
 
     def _import_profiles(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import profiles", "", "JSON/YAML (*.json *.yml)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Import profiles",
+            "",
+            "JSON/YAML (*.json *.yml)",
+        )
         if path:
             self.manager.import_profiles(Path(path))
             self._refresh_profiles()
 
     def _toggle_theme(self) -> None:
-        palette = QtWidgets.QApplication.instance().palette()
-        color_role = QtGui.QPalette.ColorRole.Window
-        current_color = palette.color(color_role)
-        if current_color.value() < 128:
-            QtWidgets.QApplication.instance().setStyle("Fusion")
-            palette = QtGui.QPalette()
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#ffffff"))
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#202020"))
+        new_theme = "light" if getattr(self, "current_theme", "dark") == "dark" else "dark"
+        self._apply_theme(new_theme)
+
+    def _update_toolbar_state(self) -> None:
+        name = self._selected_profile_name()
+        if not name:
+            self.connect_button.setEnabled(False)
+            self.disconnect_button.setEnabled(False)
+            self.log_button.setEnabled(False)
+            self.edit_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
+            self.duplicate_button.setEnabled(False)
+            return
+        status = self.manager.get_status(name)
+        self.edit_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
+        self.duplicate_button.setEnabled(True)
+        self.log_button.setEnabled(True)
+        if not status or status.state in {ConnectionState.DISCONNECTED, ConnectionState.ERROR}:
+            self.connect_button.setEnabled(True)
+            self.disconnect_button.setEnabled(False)
+        elif status.state == ConnectionState.CONNECTED:
+            self.connect_button.setEnabled(False)
+            self.disconnect_button.setEnabled(True)
         else:
-            QtWidgets.QApplication.instance().setStyle("Fusion")
-            palette = QtGui.QPalette()
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#1e1e1e"))
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#f0f0f0"))
-        QtWidgets.QApplication.instance().setPalette(palette)
+            self.connect_button.setEnabled(False)
+            self.disconnect_button.setEnabled(True)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
         asyncio.run_coroutine_threadsafe(self.manager.disconnect_all(), self.loop)
@@ -410,4 +740,3 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Missing dependencies",
                 "Some recommended dependencies are missing:\n" + commands,
             )
-

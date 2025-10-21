@@ -7,12 +7,12 @@ import datetime as dt
 import os
 import re
 import shlex
-import webbrowser
 from dataclasses import dataclass
 from enum import Enum
 
 from ..saml.listener import SAMLListener
 from ..utils import network
+from ..utils.browsers import launch_browser
 from ..utils.logging import get_logger, session_log_path
 from ..utils.notifications import notify
 from .profile import VPNProfile
@@ -140,14 +140,13 @@ class VPNConnection:
     def _open_browser(self) -> None:
         url = f"https://{self.profile.host}/remote/saml/start?redirect=1"
         notify("SAML login", "Launching browser for SAML authentication")
-        if self.profile.browser:
-            try:
-                browser = webbrowser.get(self.profile.browser)
-                browser.open(url)
-                return
-            except webbrowser.Error:
-                logger.warning("Failed to open requested browser %s", self.profile.browser)
-        webbrowser.open(url)
+        if not launch_browser(self.profile.browser, self.profile.browser_profile, url):
+            logger.warning(
+                "Falling back to default browser for %s (requested: %s profile %s)",
+                self.profile.name,
+                self.profile.browser or "default",
+                self.profile.browser_profile or "default",
+            )
 
     async def _stream_reader(self, stream: asyncio.StreamReader | None, is_stderr: bool) -> None:
         if not stream:

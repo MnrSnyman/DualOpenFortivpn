@@ -23,23 +23,23 @@ cleanup, and an elegant UI inspired by Uptime Kuma.
 
 ## Installation
 
-OpenFortiVPN Manager targets modern Linux distributions with Python 3.9+ and a working `openfortivpn` binary. This guide walks through installing the required system libraries, preparing Python dependencies, launching the application, and keeping everything up to date.
+OpenFortiVPN Manager targets modern Linux distributions with Python 3.9+ and a working `openfortivpn` binary. This guide walks through installing system prerequisites, setting up Python dependencies, launching the interface, and keeping everything current.
 
 ### Prerequisites
 
-- Python 3.9 or newer along with `pip` (verify with `python3 --version` and `python3 -m pip --version`).
-- `openfortivpn` available on your `PATH` to establish VPN tunnels.
-- Ability to authorize privilege escalation via `pkexec`/PolicyKit when routes and DNS settings are modified.
+- Python 3.9 or newer with `pip` available (`python3 --version`, `python3 -m pip --version`).
+- `openfortivpn` present on your `PATH` to establish tunnels.
+- Ability to grant PolicyKit/`pkexec` privileges when routes, DNS, and PPP interfaces are configured.
 
 ### Install System Packages
 
-Install the VPN client, PolicyKit components, Qt runtime libraries, and notification utilities provided by your distribution.
+Install the VPN client, PolicyKit components, Qt (PySide6) runtime libraries, and notification tooling provided by your distribution.
 
 #### Debian / Ubuntu
 
 - `openfortivpn` – Fortinet SSL VPN client executed for each tunnel.
 - `policykit-1` – supplies `pkexec` dialogs for elevated actions.
-- `libegl1`, `libgl1` – OpenGL/EGL libraries required by PyQt6.
+- `libegl1`, `libgl1` – OpenGL/EGL libraries required by PySide6.
 - `libnotify-bin` – enables desktop notifications.
 
 ```bash
@@ -51,7 +51,7 @@ sudo apt install -y python3 python3-pip python3-venv openfortivpn policykit-1 li
 
 - `openfortivpn` – Fortinet SSL VPN client.
 - `polkit` – PolicyKit service providing `pkexec` authentication.
-- `mesa-libEGL`, `mesa-libGL` – OpenGL/EGL support for PyQt6.
+- `mesa-libEGL`, `mesa-libGL` – OpenGL/EGL support for PySide6.
 - `libnotify` – desktop notification support.
 
 ```bash
@@ -62,7 +62,7 @@ sudo dnf install -y python3 python3-pip python3-virtualenv openfortivpn polkit m
 
 - `openfortivpn` – Fortinet SSL VPN client.
 - `polkit` – provides PolicyKit dialogs.
-- `libegl`, `libglvnd` – OpenGL/EGL libraries for PyQt6.
+- `libegl`, `libglvnd` – OpenGL/EGL libraries for PySide6.
 - `libnotify` – desktop notification support.
 
 ```bash
@@ -71,12 +71,17 @@ sudo pacman -Syu --needed python python-pip python-virtualenv openfortivpn polki
 
 ### Install Python Dependencies
 
-The application depends on the following Python packages:
+OpenFortiVPN Manager depends on:
 
-- `PyQt6` – graphical interface
-- `PyYAML` – profile and settings persistence
+- `PySide6` – modern Qt GUI bindings
+- `aiohttp` – async HTTP client for update checks and SAML listeners
+- `typer[all]` – CLI interface with rich completion support
+- `rich` – styled CLI output
+- `psutil` – process inspection and cleanup
+- `PyYAML` – profile import/export
 - `cryptography` – encrypted credential storage
-- `requests` – GitHub update checks and network helpers
+- `notify2` – desktop notifications
+- `distro` – Linux distribution detection
 
 **Using a virtual environment (recommended):**
 
@@ -84,19 +89,19 @@ The application depends on the following Python packages:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade PyQt6 PyYAML cryptography requests
+python -m pip install --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro
 ```
 
 **Using per-user pip (without a virtual environment):**
 
 ```bash
 python3 -m pip install --user --upgrade pip
-python3 -m pip install --user --upgrade PyQt6 PyYAML cryptography requests
+python3 -m pip install --user --upgrade PySide6 aiohttp "typer[all]" rich psutil PyYAML cryptography notify2 distro
 ```
 
 ### Quick Install (Advanced Users)
 
-Run this single command to clone the repository, detect your distribution, install system prerequisites, and install Python dependencies using `pip --user`:
+Run this command to clone the repository anonymously, detect your distribution, install system prerequisites, and install Python dependencies using `pip --user`:
 
 ```bash
 bash -c '
@@ -109,10 +114,10 @@ elif [ -d "$APPDIR" ]; then
   echo "[INFO] Using existing directory at $APPDIR (skipping clone)"
 else
   echo "[INFO] Cloning OpenFortiVPN Manager into $APPDIR"
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git clone --depth 1 https://github.com/MnrSnyman/OpenFortiVPN-Manager.git "$APPDIR" || {
+  if ! GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git clone --depth 1 https://github.com/MnrSnyman/OpenFortiVPN-Manager.git "$APPDIR"; then
     echo "[ERROR] Failed to clone repository anonymously." >&2
     exit 1
-  }
+  fi
 fi
 
 cd "$APPDIR"
@@ -139,7 +144,7 @@ case "$ID" in
 esac
 
 python3 -m pip install --user --upgrade pip
-python3 -m pip install --user --upgrade PyQt6 PyYAML cryptography requests
+python3 -m pip install --user --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro
 
 echo "[SUCCESS] Installation complete. Launch with: python3 -m openfortivpn_gui"
 '
@@ -152,23 +157,23 @@ git clone https://github.com/MnrSnyman/OpenFortiVPN-Manager.git
 cd openfortivpn-manager
 # Activate the virtual environment if you created one:
 source .venv/bin/activate 2>/dev/null || true
-python3 -m openfortivpn_gui            # launch the PyQt6 GUI
+python3 -m openfortivpn_gui            # launch the PySide6 GUI
 python3 -m openfortivpn_gui --cli list # list profiles via the CLI companion
 ```
 
 ### First Launch Behavior
 
-- A configuration file is created at `~/.config/multi_vpn_manager/config.yaml` to store profiles and preferences.
-- The optional desktop launcher is written to `~/.local/share/applications/multi-vpn-manager.desktop` for quick relaunches.
+- A configuration file is created at `~/.config/openfortivpn-gui/config.json` to store profiles and preferences.
+- The optional desktop launcher is written to `~/.local/share/applications/openfortivpn-gui.desktop` for quick relaunches.
 - When connecting to a VPN, `pkexec` prompts for administrative credentials so routes, DNS, and PPP interfaces can be managed.
 
 ### Troubleshooting
 
 - **`openfortivpn` not found:** Reinstall the package for your distribution and confirm `command -v openfortivpn` returns a path.
-- **Browser not detected:** Install a supported browser (Firefox, Chromium, or Chrome) and ensure it is on your `PATH`.
+- **Browser not detected:** Install a supported browser (Firefox, Chromium, Chrome, Brave, or Edge) and ensure it is on your `PATH`.
 - **Missing PolicyKit or EGL libraries:** Re-run the system package commands above to install `policykit-1`/`polkit` and the appropriate `libegl`/`libgl` libraries.
 - **PKI authentication dialogs:** Accept the `pkexec` prompt that appears when connecting; denying or closing it will abort tunnel setup.
-- **Configuration or permission issues:** Remove `~/.config/multi_vpn_manager/config.yaml` (after backing up) and relaunch to regenerate defaults, ensuring your user owns the configuration directory.
+- **Configuration or permission issues:** Remove `~/.config/openfortivpn-gui/config.json` (after backing up) and relaunch to regenerate defaults, ensuring your user owns the configuration directory.
 
 ### Updating
 
@@ -177,7 +182,7 @@ Refresh the source code and upgrade dependencies (activate your virtual environm
 ```bash
 cd openfortivpn-manager
 git pull --ff-only
-python -m pip install --upgrade PyQt6 PyYAML cryptography requests
+python -m pip install --upgrade PySide6 aiohttp 'typer[all]' rich psutil PyYAML cryptography notify2 distro
 ```
 ## Configuration
 
