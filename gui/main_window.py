@@ -13,6 +13,7 @@ from core.qt_compat import (
     QObject,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -130,9 +131,15 @@ class MainWindow(QMainWindow):
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(48)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
         splitter.addWidget(self.table)
 
         self.log_viewer = QPlainTextEdit()
@@ -141,6 +148,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.log_viewer)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(False)
 
         central_layout.addWidget(splitter)
         self.setCentralWidget(central)
@@ -171,16 +179,30 @@ class MainWindow(QMainWindow):
         self.table.setItem(row, 7, QTableWidgetItem("Yes" if profile.auto_reconnect else "No"))
         status_text = self.session_status.get(profile.name, "Idle")
         status_item = QTableWidgetItem(status_text)
+        if hasattr(Qt, "AlignmentFlag"):
+            alignment_value = int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        else:
+            alignment_value = int(Qt.AlignVCenter | Qt.AlignLeft)
+        status_item.setTextAlignment(alignment_value)
         self.table.setItem(row, 8, status_item)
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addStretch()
         connect_button = QPushButton("Connect")
+        connect_button.setObjectName("connectButton")
+        connect_button.setMinimumWidth(96)
+        connect_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         connect_button.clicked.connect(lambda checked=False, name=profile.name: self._connect_profile(name))
         disconnect_button = QPushButton("Disconnect")
+        disconnect_button.setObjectName("disconnectButton")
+        disconnect_button.setMinimumWidth(96)
+        disconnect_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         disconnect_button.clicked.connect(lambda checked=False, name=profile.name: self._disconnect_profile(name))
         layout.addWidget(connect_button)
         layout.addWidget(disconnect_button)
+        layout.addStretch()
         widget.setLayout(layout)
         self.table.setCellWidget(row, 9, widget)
 

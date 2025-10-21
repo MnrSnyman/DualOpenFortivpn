@@ -38,6 +38,7 @@ QTableWidget = QtWidgets.QTableWidget
 QTableWidgetItem = QtWidgets.QTableWidgetItem
 QHeaderView = QtWidgets.QHeaderView
 QPushButton = QtWidgets.QPushButton
+QSizePolicy = QtWidgets.QSizePolicy
 
 QDialog = QtWidgets.QDialog
 QDialogButtonBox = QtWidgets.QDialogButtonBox
@@ -104,6 +105,14 @@ if QT_VERSION == 5:  # pragma: no cover - only exercised on PyQt5 systems
             No=QMessageBox.No,
         )
 
+    if not hasattr(QSizePolicy, "Policy"):
+        QSizePolicy.Policy = SimpleNamespace(  # type: ignore[attr-defined]
+            Fixed=QSizePolicy.Fixed,
+            Preferred=QSizePolicy.Preferred,
+            Expanding=QSizePolicy.Expanding,
+            Minimum=QSizePolicy.Minimum,
+        )
+
 __all__ = [
     "QT_VERSION",
     "Qt",
@@ -123,6 +132,7 @@ __all__ = [
     "QTableWidgetItem",
     "QHeaderView",
     "QPushButton",
+    "QSizePolicy",
     "QDialog",
     "QDialogButtonBox",
     "QComboBox",

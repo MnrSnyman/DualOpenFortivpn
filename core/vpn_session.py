@@ -11,8 +11,6 @@ from typing import Dict, Optional, Tuple
 
 from core.qt_compat import QThread, Signal
 
-from .command_builder import build_openfortivpn_command
-
 from .browser_detection import BrowserInfo, detect_browsers
 from .logging_manager import get_logging_manager
 from .privilege import PrivilegeManager
@@ -143,7 +141,16 @@ class VPNSession(QThread):
         return connected_once
 
     def _build_command(self) -> list[str]:
-        return build_openfortivpn_command(self.profile)
+        command = ["openfortivpn", f"{self.profile.host}:{self.profile.port}"]
+        if self.profile.auth_type.lower() == "saml":
+            if self.profile.saml_port:
+                command.append(f"--saml-login={self.profile.saml_port}")
+            else:
+                command.append("--saml-login")
+        else:
+            if self.profile.username:
+                command.append(f"--username={self.profile.username}")
+        return command
 
     def _handle_output(self, line: str) -> None:
         # Capture the interface name as soon as it appears so route management
