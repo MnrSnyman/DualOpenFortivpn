@@ -106,7 +106,7 @@ Run this command to clone the repository anonymously, detect your distribution, 
 ```bash
 bash -c '
 set -euo pipefail
-APPDIR="${APPDIR:-$HOME/Openfortivpn-manager}"
+APPDIR="${APPDIR:-$HOME/OpenFortiVPN-Manager}"
 
 if [ -d "$APPDIR/.git" ]; then
   echo "[INFO] Repository already present at $APPDIR"
