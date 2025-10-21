@@ -9,7 +9,7 @@ import time
 import webbrowser
 from typing import Dict, Optional, Tuple
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from core.qt_compat import QThread, Signal
 
 from .browser_detection import BrowserInfo, detect_browsers
 from .logging_manager import get_logging_manager
@@ -22,10 +22,10 @@ PASSWORD_PROMPT_RE = re.compile(r"password", re.IGNORECASE)
 
 
 class VPNSession(QThread):
-    status_changed = pyqtSignal(str)
-    log_line = pyqtSignal(str)
-    connected = pyqtSignal(str)
-    disconnected = pyqtSignal(str)
+    status_changed = Signal(str)
+    log_line = Signal(str)
+    connected = Signal(str)
+    disconnected = Signal(str)
 
     def __init__(
         self,
@@ -131,12 +131,6 @@ class VPNSession(QThread):
                 connected_once = True
                 self.status_changed.emit("Connected")
                 self.connected.emit(self.profile.name)
-            if "Interface" in cleaned and "ppp" in cleaned:
-                parts = cleaned.split()
-                for part in parts:
-                    if part.startswith("ppp") or part.startswith("tun"):
-                        self._interface_name = part
-                        break
         self._route_manager.cleanup(self.profile.name)
         rc = self._process.wait() if self._process else 0
         self.disconnected.emit(self.profile.name)
@@ -160,6 +154,15 @@ class VPNSession(QThread):
         return command
 
     def _handle_output(self, line: str) -> None:
+        # Capture the interface name as soon as it appears so route management
+        # receives an explicit hint instead of falling back to interface
+        # detection that can miss already-established PPP/TUN devices.
+        if "Interface" in line and ("ppp" in line or "tun" in line):
+            parts = line.split()
+            for part in parts:
+                if part.startswith("ppp") or part.startswith("tun"):
+                    self._interface_name = part
+                    break
         if self.profile.auth_type.lower() == "saml":
             if not self._browser_launched and ("Authenticate" in line or "browser" in line.lower()):
                 match = re.search(r"https?://[^\s]+", line)
@@ -172,13 +175,12 @@ class VPNSession(QThread):
                     _, password = self._credentials
                     self._process.stdin.write(password + "\n")
                     self._process.stdin.flush()
-        if (
-            "Interface" in line
-            and "ppp" in line
-            and self.profile.routes
-            and not self._routes_applied
-        ):
-            self._route_manager.apply_routes(self.profile.name, self.profile.routes, self._interface_name)
+        if self.profile.routes and not self._routes_applied and self._interface_name:
+            self._route_manager.apply_routes(
+                self.profile.name,
+                self.profile.routes,
+                self._interface_name,
+            )
             self._routes_applied = True
 
     def _launch_browser(self, url: str) -> None:

@@ -17,7 +17,9 @@ class ConfigManager:
 
     def __init__(self) -> None:
         ensure_directories()
-        self._lock = threading.Lock()
+        # A reentrant lock prevents deadlock when save() is invoked from other
+        # methods that already hold the lock.
+        self._lock = threading.RLock()
         self._profiles: Dict[str, VPNProfile] = {}
         self._load()
 

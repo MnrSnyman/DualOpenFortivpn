@@ -21,6 +21,7 @@ LOGGER = get_logging_manager().logger
 class AppliedRoute:
     destination: str
     interface: str
+    family: int = 4
 
 
 class RouteManager:
@@ -65,6 +66,27 @@ class RouteManager:
                 return name
         return None
 
+    def _determine_family(self, destination: str) -> int:
+        """Return IP version for a destination string."""
+        try:
+            network = ipaddress.ip_network(destination, strict=False)
+            return network.version
+        except ValueError:
+            try:
+                address = ipaddress.ip_address(destination)
+                return address.version
+            except ValueError:
+                # Default to IPv4 if parsing failed; command will surface an error.
+                return 4
+
+    def _build_route_command(self, action: str, destination: str, interface: str, family: int) -> List[str]:
+        """Construct the ip route command for IPv4 or IPv6 targets."""
+        command = ["ip"]
+        if family == 6:
+            command.append("-6")
+        command.extend(["route", action, destination, "dev", interface])
+        return command
+
     def apply_routes(self, session_id: str, targets: List[str], interface_hint: Optional[str]) -> None:
         if not targets:
             return
@@ -87,13 +109,14 @@ class RouteManager:
             except Exception as exc:
                 LOGGER.error("Failed to resolve route target %s: %s", entry, exc)
                 continue
+            family = self._determine_family(destination)
             try:
-                cmd = ["ip", "route", "add", destination, "dev", interface]
+                cmd = self._build_route_command("add", destination, interface, family)
                 code, stdout, stderr = self._run_privileged(cmd)
                 if code != 0:
                     LOGGER.error("Failed to add route %s via %s: %s", destination, interface, stderr.strip())
                     continue
-                applied.append(AppliedRoute(destination, interface))
+                applied.append(AppliedRoute(destination, interface, family))
                 LOGGER.info("Route %s added via %s", destination, interface)
             except Exception as exc:
                 LOGGER.exception("Exception while adding route %s: %s", entry, exc)
@@ -107,7 +130,7 @@ class RouteManager:
         LOGGER.info("Cleaning custom routes for session %s", session_id)
         for route in applied:
             try:
-                cmd = ["ip", "route", "del", route.destination, "dev", route.interface]
+                cmd = self._build_route_command("del", route.destination, route.interface, route.family)
                 code, stdout, stderr = self._run_privileged(cmd)
                 if code != 0:
                     LOGGER.warning("Failed to remove route %s: %s", route.destination, stderr.strip())

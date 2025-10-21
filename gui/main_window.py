@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from core.qt_compat import (
     QAction,
     QHBoxLayout,
     QHeaderView,
     QMainWindow,
     QMessageBox,
-    QPushButton,
+    QObject,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
     QWidget,
+    Qt,
+    QT_VERSION,
+    Signal,
 )
 
 from config.keyring_manager import KeyringManager
@@ -33,7 +36,7 @@ from gui.styles import DARK_THEME_QSS
 
 
 class _LogEmitter(QObject):
-    log_received = pyqtSignal(str)
+    log_received = Signal(str)
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +51,7 @@ class MainWindow(QMainWindow):
         self.config_manager = ConfigManager()
         self.keyring_manager = KeyringManager()
         self.logging_manager = get_logging_manager()
+        self.logging_manager.logger.info("Using PyQt version: %s", QT_VERSION)
         self._log_emitter = _LogEmitter()
         self._log_emitter.log_received.connect(self._append_log)
         self._log_listener = lambda message: self._log_emitter.log_received.emit(message)

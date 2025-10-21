@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from PyQt6.QtWidgets import (
+from core.qt_compat import (
     QCheckBox,
     QComboBox,
     QDialog,
