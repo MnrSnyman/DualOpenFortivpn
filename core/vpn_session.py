@@ -150,7 +150,6 @@ class VPNSession(QThread):
         else:
             if self.profile.username:
                 command.append(f"--username={self.profile.username}")
-        command.append("--pppd-use-peerdns")
         return command
 
     def _handle_output(self, line: str) -> None:
