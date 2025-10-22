@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import shutil
 import subprocess
 from typing import Callable, List, Optional, Tuple
@@ -63,11 +64,15 @@ class PrivilegeManager:
     def password_cached(self) -> bool:
         return self._cached_password is not None
 
-    def send_signal(self, pid: int, sig: int) -> bool:
+    def send_signal(self, pid: int, sig: signal.Signals | int) -> bool:
         """Send a signal to a privileged process using pkexec or sudo."""
 
         kill_binary = shutil.which("kill") or "/bin/kill"
-        command = [kill_binary, f"-{sig}", str(pid)]
+        if isinstance(sig, signal.Signals):
+            signal_argument = sig.value
+        else:
+            signal_argument = sig
+        command = [kill_binary, f"-{signal_argument}", str(pid)]
         try:
             argv, password = self.build_command(command)
         except RuntimeError:
