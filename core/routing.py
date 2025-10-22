@@ -65,12 +65,11 @@ class RouteManager:
                 seen: set[str] = set()
                 for entry in info:
                     addr = entry[4][0]
-                    network = ipaddress.ip_network(addr, strict=False)
-                    destination = str(network)
-                    if destination in seen:
+                    if addr in seen:
                         continue
-                    seen.add(destination)
-                    destinations.append((destination, network.version))
+                    seen.add(addr)
+                    family = 6 if ":" in addr else 4
+                    destinations.append((addr, family))
         return destinations
 
     def _detect_interface(self, previous: List[str]) -> Optional[str]:
@@ -80,6 +79,34 @@ class RouteManager:
             if name.startswith("ppp") or name.startswith("tun"):
                 return name
         return None
+
+    def _normalize_destination(self, destination: str, family: int) -> str:
+        """Return a canonical representation with explicit prefix length."""
+        if destination == "default":
+            return destination
+        try:
+            if "/" in destination:
+                network = ipaddress.ip_network(destination, strict=False)
+            else:
+                suffix = "/32" if family == 4 else "/128"
+                network = ipaddress.ip_network(f"{destination}{suffix}", strict=False)
+            return str(network)
+        except ValueError:
+            return destination
+
+    def _prefix_length(self, destination: str, family: int) -> Optional[int]:
+        """Extract the CIDR prefix length for comparison purposes."""
+        if destination == "default":
+            return 0
+        try:
+            network = ipaddress.ip_network(destination, strict=False)
+            return network.prefixlen
+        except ValueError:
+            try:
+                address = ipaddress.ip_address(destination)
+            except ValueError:
+                return None
+            return 32 if family == 4 else 128
 
     def _build_route_command(
         self,
@@ -96,14 +123,6 @@ class RouteManager:
         command.extend(["route", action, destination, "dev", interface])
         if metric is not None:
             command.extend(["metric", str(metric)])
-        return command
-
-    def _build_delete_command(self, destination: str, family: int) -> List[str]:
-        """Return a command that removes an existing route without interface hints."""
-        command = ["ip"]
-        if family == 6:
-            command.append("-6")
-        command.extend(["route", "del", destination])
         return command
 
     def _capture_existing_route(self, destination: str, family: int) -> Optional[Dict[str, str]]:
@@ -196,7 +215,14 @@ class RouteManager:
                 LOGGER.error("No addresses resolved for route target %s", entry)
                 continue
             for destination, family in destinations:
+                command_destination = self._normalize_destination(destination, family)
                 existing = self._capture_existing_route(destination, family)
+                new_prefix = self._prefix_length(command_destination, family)
+                existing_prefix = (
+                    self._prefix_length(existing["destination"], family)
+                    if existing and "destination" in existing
+                    else None
+                )
                 metric_hint = 1
                 if existing and existing.get("dev") == interface:
                     # The route already targets the VPN device but may use a higher
@@ -204,12 +230,12 @@ class RouteManager:
                     # previous attributes so they can be restored after disconnect.
                     LOGGER.info(
                         "Route %s already uses interface %s; ensuring preferred metric",
-                        destination,
+                        command_destination,
                         interface,
                     )
                     ensure_cmd = self._build_route_command(
                         "change",
-                        destination,
+                        command_destination,
                         interface,
                         family,
                         metric_hint,
@@ -224,7 +250,7 @@ class RouteManager:
                         continue
                     applied.append(
                         AppliedRoute(
-                            destination,
+                            command_destination,
                             interface,
                             family,
                             replaced=True,
@@ -235,7 +261,7 @@ class RouteManager:
                 try:
                     cmd = self._build_route_command(
                         "add",
-                        destination,
+                        command_destination,
                         interface,
                         family,
                         metric_hint,
@@ -244,59 +270,85 @@ class RouteManager:
                     if code != 0:
                         message = stderr.strip() or stdout.strip()
                         if "exists" in message.lower():
+                            if existing_prefix is not None and new_prefix is not None and new_prefix > existing_prefix:
+                                replace_cmd = self._build_route_command(
+                                    "replace",
+                                    command_destination,
+                                    interface,
+                                    family,
+                                    metric_hint,
+                                )
+                                repl_code, repl_stdout, repl_stderr = self._run_privileged(replace_cmd)
+                                if repl_code != 0:
+                                    LOGGER.error(
+                                        "Failed to install more specific route %s via %s: %s",
+                                        command_destination,
+                                        interface,
+                                        repl_stderr.strip() or repl_stdout.strip(),
+                                    )
+                                    continue
+                                applied.append(
+                                    AppliedRoute(
+                                        command_destination,
+                                        interface,
+                                        family,
+                                    )
+                                )
+                                LOGGER.info(
+                                    "Route %s added via %s (preferred over existing %s)",
+                                    command_destination,
+                                    interface,
+                                    existing.get("destination", "unknown"),
+                                )
+                                continue
                             if not existing:
                                 LOGGER.error(
                                     "Route %s already exists but could not capture current entry; skipping",
-                                    destination,
-                                )
-                                continue
-                            delete_cmd = self._build_delete_command(destination, family)
-                            delete_code, _, delete_stderr = self._run_privileged(delete_cmd)
-                            if delete_code != 0:
-                                LOGGER.error(
-                                    "Failed to remove existing route %s before replacement: %s",
-                                    destination,
-                                    delete_stderr.strip(),
+                                    command_destination,
                                 )
                                 continue
                             replace_cmd = self._build_route_command(
-                                "add",
-                                destination,
+                                "replace",
+                                command_destination,
                                 interface,
                                 family,
                                 metric_hint,
                             )
-                            code, stdout, stderr = self._run_privileged(replace_cmd)
-                            if code != 0:
+                            repl_code, repl_stdout, repl_stderr = self._run_privileged(replace_cmd)
+                            if repl_code != 0:
                                 LOGGER.error(
                                     "Failed to replace existing route %s via %s: %s",
-                                    destination,
+                                    command_destination,
                                     interface,
-                                    stderr.strip(),
+                                    repl_stderr.strip() or repl_stdout.strip(),
                                 )
                                 continue
                             applied.append(
                                 AppliedRoute(
-                                    destination,
+                                    command_destination,
                                     interface,
                                     family,
                                     replaced=True,
                                     previous=existing,
                                 )
                             )
-                            LOGGER.info("Route %s replaced with interface %s", destination, interface)
+                            LOGGER.info(
+                                "Route %s replaced with interface %s",
+                                command_destination,
+                                interface,
+                            )
                             continue
                         LOGGER.error(
                             "Failed to add route %s via %s: %s",
-                            destination,
+                            command_destination,
                             interface,
                             message,
                         )
                         continue
-                    applied.append(AppliedRoute(destination, interface, family))
-                    LOGGER.info("Route %s added via %s", destination, interface)
+                    applied.append(AppliedRoute(command_destination, interface, family))
+                    LOGGER.info("Route %s added via %s", command_destination, interface)
                 except Exception as exc:
-                    LOGGER.exception("Exception while adding route %s: %s", destination, exc)
+                    LOGGER.exception("Exception while adding route %s: %s", command_destination, exc)
         if applied:
             self._session_routes[session_id] = applied
 
