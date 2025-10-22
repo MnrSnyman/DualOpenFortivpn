@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -49,15 +50,7 @@ class VPNSession(QThread):
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._process and self._process.poll() is None:
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=10)
-            except Exception:
-                try:
-                    self._process.kill()
-                except Exception:
-                    pass
+        self._terminate_process()
         self._route_manager.cleanup(self.profile.name)
         self._routes_applied = False
         self._browser_launched = False
@@ -103,6 +96,7 @@ class VPNSession(QThread):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                start_new_session=True,
             )
         except FileNotFoundError:
             message = "openfortivpn binary not found"
@@ -139,6 +133,44 @@ class VPNSession(QThread):
             self.log_line.emit(f"Process exited with code {rc}")
         self._process = None
         return connected_once
+
+    def _terminate_process(self) -> None:
+        proc = self._process
+        if not proc or proc.poll() is not None:
+            return
+        if proc.stdin:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+            if proc.poll() is not None:
+                break
+            if not self._send_signal(proc, sig):
+                continue
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                continue
+            except Exception:
+                break
+            else:
+                break
+        if proc.poll() is None:
+            LOGGER.warning("Unable to terminate openfortivpn process (pid %s)", proc.pid)
+
+    def _send_signal(self, proc: subprocess.Popen[str], sig: int) -> bool:
+        try:
+            proc.send_signal(sig)
+            return True
+        except PermissionError:
+            LOGGER.debug("Permission denied sending signal %s to pid %s; escalating", sig, proc.pid)
+            return self._privilege_manager.send_signal(proc.pid, sig)
+        except ProcessLookupError:
+            return True
+        except Exception as exc:
+            LOGGER.debug("Failed to send signal %s to pid %s: %s", sig, proc.pid, exc)
+            return False
 
     def _build_command(self) -> list[str]:
         command = ["openfortivpn", f"{self.profile.host}:{self.profile.port}"]
