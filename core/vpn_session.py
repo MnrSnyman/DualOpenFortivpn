@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -49,13 +51,26 @@ class VPNSession(QThread):
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._process and self._process.poll() is None:
+        process = self._process
+        if process and process.poll() is None:
             try:
-                self._process.terminate()
-                self._process.wait(timeout=10)
+                # Ensure every process in the privilege-elevated session receives
+                # the termination request so openfortivpn is killed even when
+                # launched through pkexec or sudo.
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except Exception:
+                    process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except Exception:
+                        process.kill()
             except Exception:
                 try:
-                    self._process.kill()
+                    process.kill()
                 except Exception:
                     pass
         self._route_manager.cleanup(self.profile.name)
@@ -103,6 +118,7 @@ class VPNSession(QThread):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                start_new_session=True,
             )
         except FileNotFoundError:
             message = "openfortivpn binary not found"

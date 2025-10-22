@@ -33,7 +33,6 @@ class RouteManager:
     def __init__(self, privilege_manager: PrivilegeManager) -> None:
         self._privilege_manager = privilege_manager
         self._session_routes: Dict[str, List[AppliedRoute]] = {}
-        self._pending_restores: Dict[str, List[Tuple[int, Dict[str, str]]]] = {}
 
     def _run_privileged(self, command: List[str]) -> Tuple[int, str, str]:
         argv, password = self._privilege_manager.build_command(command)
@@ -194,50 +193,6 @@ class RouteManager:
         )
         return True
 
-    def _restore_removed_routes(
-        self,
-        session_id: str,
-        interface: str,
-        destination: str,
-        family: int,
-        removed_entries: List[Dict[str, str]],
-    ) -> None:
-        if not removed_entries:
-            return
-        LOGGER.info(
-            "[%s] RESTORE %s – reapplying %d previously removed route(s)",
-            interface,
-            destination,
-            len(removed_entries),
-        )
-        restoration = AppliedRoute(destination=destination, interface=interface, family=family)
-        failed: List[Tuple[int, Dict[str, str]]] = []
-        restored = False
-        for entry in removed_entries:
-            if self._restore_previous_route(restoration, entry):
-                restored = True
-            else:
-                failed.append((family, entry))
-        if restored:
-            flush_cmd = ["ip"]
-            if family == 6:
-                flush_cmd.append("-6")
-            flush_cmd.extend(["route", "flush", "cache"])
-            code, stdout, stderr = self._run_privileged(flush_cmd)
-            message = stderr.strip() or stdout.strip()
-            if code == 0:
-                LOGGER.info("[system] FLUSH route cache")
-            elif message:
-                LOGGER.warning("[system] FLUSH route cache failed: %s", message)
-        if failed:
-            LOGGER.warning(
-                "Session %s still has %d original route(s) pending restoration for %s",
-                session_id,
-                len(failed),
-                destination,
-            )
-            self._pending_restores.setdefault(session_id, []).extend(failed)
-
     def apply_routes(self, session_id: str, targets: List[str], interface_hint: Optional[str]) -> None:
         if not targets:
             return
@@ -392,22 +347,13 @@ class RouteManager:
                         command_destination,
                         message or "unknown error",
                     )
-                    if removed_entries:
-                        self._restore_removed_routes(
-                            session_id,
-                            interface,
-                            command_destination,
-                            family,
-                            removed_entries,
-                        )
                     break
         if applied:
             self._session_routes[session_id] = applied
 
     def cleanup(self, session_id: str) -> None:
         applied = self._session_routes.pop(session_id, [])
-        pending = self._pending_restores.pop(session_id, [])
-        if not applied and not pending:
+        if not applied:
             return
         LOGGER.info("Cleaning custom routes for session %s", session_id)
         for route in applied:
@@ -537,29 +483,3 @@ class RouteManager:
                 )
             except Exception as exc:
                 LOGGER.exception("Exception while removing route %s: %s", route.destination, exc)
-        if pending:
-            LOGGER.info(
-                "Session %s has %d pending restoration(s) for system routes; attempting to reinstate them",
-                session_id,
-                len(pending),
-            )
-            restored_families: set[int] = set()
-            for family, entry in pending:
-                restoration = AppliedRoute(
-                    destination=entry["destination"],
-                    interface=entry.get("dev", "system"),
-                    family=family,
-                )
-                if self._restore_previous_route(restoration, entry):
-                    restored_families.add(family)
-            for family in restored_families:
-                flush_cmd = ["ip"]
-                if family == 6:
-                    flush_cmd.append("-6")
-                flush_cmd.extend(["route", "flush", "cache"])
-                flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
-                flush_message = flush_stderr.strip() or flush_stdout.strip()
-                if flush_code == 0:
-                    LOGGER.info("[system] FLUSH route cache")
-                elif flush_message:
-                    LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
