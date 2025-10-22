@@ -6,8 +6,8 @@ import ipaddress
 import socket
 import subprocess
 import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple, Union
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import psutil
 
@@ -15,8 +15,6 @@ from .logging_manager import get_logging_manager
 from .privilege import PrivilegeManager
 
 LOGGER = get_logging_manager().logger
-
-IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 
 @dataclass
@@ -26,6 +24,7 @@ class AppliedRoute:
     family: int = 4
     replaced: bool = False
     previous: Optional[Dict[str, str]] = None
+    removed: List[Dict[str, str]] = field(default_factory=list)
 
 
 class RouteManager:
@@ -114,7 +113,7 @@ class RouteManager:
         self,
         action: str,
         destination: str,
-        interface: str,
+        interface: Optional[str],
         family: int,
         metric: Optional[int] = None,
     ) -> List[str]:
@@ -122,24 +121,31 @@ class RouteManager:
         command = ["ip"]
         if family == 6:
             command.append("-6")
-        command.extend(["route", action, destination, "dev", interface])
+        command.extend(["route", action, destination])
+        if interface:
+            command.extend(["dev", interface])
         if metric is not None:
             command.extend(["metric", str(metric)])
         return command
 
-    def _capture_existing_route(self, destination: str, family: int) -> Optional[Dict[str, str]]:
-        """Return details about an existing route so it can be restored later."""
+    def _capture_existing_route(self, destination: str, family: int) -> List[Dict[str, str]]:
+        """Return all matching routes so they can be restored later."""
         command = ["ip"]
         if family == 6:
             command.append("-6")
         command.extend(["route", "show", destination])
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         if result.returncode != 0:
-            return None
-        line = result.stdout.strip().splitlines()
-        if not line:
-            return None
-        return self._parse_route_line(line[0])
+            return []
+        lines = result.stdout.strip().splitlines()
+        if not lines:
+            return []
+        routes: List[Dict[str, str]] = []
+        for raw in lines:
+            parsed = self._parse_route_line(raw)
+            if parsed:
+                routes.append(parsed)
+        return routes
 
     def _parse_route_line(self, line: str) -> Dict[str, str]:
         """Extract key attributes from an `ip route show` response."""
@@ -155,93 +161,37 @@ class RouteManager:
             idx += 1
         return route
 
-    def _show_routes(self, destination: str, family: int) -> List[Dict[str, str]]:
-        """Return all routes currently matching a destination."""
-        command = ["ip"]
-        if family == 6:
-            command.append("-6")
-        command.extend(["route", "show", destination])
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            return []
-        routes: List[Dict[str, str]] = []
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            routes.append(self._parse_route_line(line))
-        return routes
-
-    def _collect_vpn_addresses(self) -> Dict[int, Set[IPAddress]]:
-        """Return the set of IP addresses currently assigned to VPN interfaces."""
-        vpn_addresses: Dict[int, Set[IPAddress]] = {4: set(), 6: set()}
-        try:
-            interfaces = psutil.net_if_addrs()
-        except Exception:
-            return vpn_addresses
-        for name, addresses in interfaces.items():
-            if not (name.startswith("ppp") or name.startswith("tun")):
-                continue
-            for entry in addresses:
-                ip_value = getattr(entry, "address", None)
-                family = getattr(entry, "family", None)
-                if not ip_value or family not in {socket.AF_INET, socket.AF_INET6}:
-                    continue
-                if "%" in ip_value:
-                    ip_value = ip_value.split("%", 1)[0]
-                try:
-                    ip_obj = ipaddress.ip_address(ip_value)
-                except ValueError:
-                    continue
-                vpn_addresses[ip_obj.version].add(ip_obj)
-        return vpn_addresses
-
-    def _match_vpn_endpoint(
-        self,
-        destination: str,
-        family: int,
-        vpn_addresses: Dict[int, Set[IPAddress]],
-        prefix_length: Optional[int],
-    ) -> Optional[str]:
-        """Return the VPN endpoint address if the destination targets it."""
-        if prefix_length not in {32, 128}:
-            return None
-        candidates = vpn_addresses.get(family)
-        if not candidates:
-            return None
-        try:
-            network = ipaddress.ip_network(destination, strict=False)
-        except ValueError:
-            try:
-                host = ipaddress.ip_address(destination)
-            except ValueError:
-                return None
-            return str(host) if host in candidates else None
-        for address in candidates:
-            if address in network:
-                return str(address)
-        return None
-
-    def _restore_previous_route(self, route: AppliedRoute) -> None:
-        if not route.previous:
-            return
+    def _restore_previous_route(self, route: AppliedRoute, data: Optional[Dict[str, str]] = None) -> bool:
+        entry = data or route.previous
+        if not entry:
+            return False
         command = ["ip"]
         if route.family == 6:
             command.append("-6")
-        command.extend(["route", "replace", route.previous["destination"]])
-        if "via" in route.previous:
-            command.extend(["via", route.previous["via"]])
-        if "dev" in route.previous:
-            command.extend(["dev", route.previous["dev"]])
-        if "metric" in route.previous:
-            command.extend(["metric", route.previous["metric"]])
+        command.extend(["route", "replace", entry["destination"]])
+        if "via" in entry:
+            command.extend(["via", entry["via"]])
+        if "dev" in entry:
+            command.extend(["dev", entry["dev"]])
+        if "metric" in entry:
+            command.extend(["metric", entry["metric"]])
         code, stdout, stderr = self._run_privileged(command)
         if code != 0:
+            message = stderr.strip() or stdout.strip()
             LOGGER.warning(
-                "Failed to restore previous route %s: %s",
-                route.previous["destination"],
-                stderr.strip(),
+                "[%s] RESTORE %s failed: %s",
+                entry.get("dev", "system"),
+                entry["destination"],
+                message,
             )
+            return False
+        LOGGER.info(
+            "[%s] RESTORE %s metric %s – success",
+            entry.get("dev", "system"),
+            entry["destination"],
+            entry.get("metric", "0"),
+        )
+        return True
 
     def apply_routes(self, session_id: str, targets: List[str], interface_hint: Optional[str]) -> None:
         if not targets:
@@ -259,9 +209,7 @@ class RouteManager:
             LOGGER.warning("Unable to determine VPN interface for session %s; skipping routes", session_id)
             return
         applied: List[AppliedRoute] = []
-        # When openfortivpn reports the interface name the kernel may still be
-        # bringing the device up. Wait briefly until the interface is visible to
-        # avoid "Cannot find device" errors when applying routes immediately.
+        # Give the PPP/TUN device time to settle before manipulating the table.
         if interface not in psutil.net_if_addrs():
             for _ in range(20):
                 time.sleep(0.25)
@@ -274,7 +222,7 @@ class RouteManager:
                     session_id,
                 )
                 return
-        vpn_addresses = self._collect_vpn_addresses()
+        time.sleep(1)
         for entry in targets:
             try:
                 destinations = self._resolve_targets(entry)
@@ -286,149 +234,134 @@ class RouteManager:
                 continue
             for destination, family in destinations:
                 command_destination = self._normalize_destination(destination, family)
-                new_prefix = self._prefix_length(command_destination, family)
-                matched_endpoint = self._match_vpn_endpoint(
-                    command_destination, family, vpn_addresses, new_prefix
-                )
-                if matched_endpoint:
-                    LOGGER.info(
-                        "Skipping custom route %s; matches VPN endpoint %s",
-                        command_destination,
-                        matched_endpoint,
-                    )
-                    continue
-                existing = self._capture_existing_route(destination, family)
-                existing_prefix = (
-                    self._prefix_length(existing["destination"], family)
-                    if existing and "destination" in existing
-                    else None
-                )
-                metric_hint = 1
-                if existing and existing.get("dev") == interface:
-                    # The route already targets the VPN device but may use a higher
-                    # metric than competing paths. Force a low metric and record the
-                    # previous attributes so they can be restored after disconnect.
-                    LOGGER.info(
-                        "Route %s already uses interface %s; ensuring preferred metric",
-                        command_destination,
-                        interface,
-                    )
-                    ensure_cmd = self._build_route_command(
-                        "change",
-                        command_destination,
-                        interface,
-                        family,
-                        metric_hint,
-                    )
-                    code, stdout, stderr = self._run_privileged(ensure_cmd)
-                    if code != 0:
-                        LOGGER.debug(
-                            "Route %s metric update skipped: %s",
-                            destination,
-                            (stderr.strip() or stdout.strip()),
-                        )
-                        continue
-                    applied.append(
-                        AppliedRoute(
-                            command_destination,
+                attempt = 0
+                removed_entries: List[Dict[str, str]] = []
+                seen_signatures: set[Tuple[str, str, str, str]] = set()
+                while True:
+                    duplicates = self._capture_existing_route(command_destination, family)
+                    if duplicates:
+                        LOGGER.info(
+                            "[%s] DELETE %s – removing %d existing entries",
                             interface,
-                            family,
-                            replaced=True,
-                            previous=existing,
+                            command_destination,
+                            len(duplicates),
                         )
-                    )
-                    continue
-                try:
-                    cmd = self._build_route_command(
+                        general_delete = self._build_route_command("del", command_destination, None, family)
+                        code, stdout, stderr = self._run_privileged(general_delete)
+                        message = stderr.strip() or stdout.strip()
+                        if code == 0:
+                            LOGGER.info("[system] DELETE %s – duplicate removed", command_destination)
+                        elif message:
+                            LOGGER.debug("[system] DELETE %s – %s", command_destination, message)
+                        for existing_entry in duplicates:
+                            signature = (
+                                existing_entry.get("destination", ""),
+                                existing_entry.get("dev", ""),
+                                existing_entry.get("via", ""),
+                                existing_entry.get("metric", ""),
+                            )
+                            if signature not in seen_signatures:
+                                removed_entries.append(existing_entry)
+                                seen_signatures.add(signature)
+                            existing_iface = existing_entry.get("dev")
+                            if existing_iface:
+                                specific_delete = self._build_route_command(
+                                    "del",
+                                    command_destination,
+                                    existing_iface,
+                                    family,
+                                )
+                                code, stdout, stderr = self._run_privileged(specific_delete)
+                                message = stderr.strip() or stdout.strip()
+                                if code == 0:
+                                    LOGGER.info(
+                                        "[%s] DELETE %s – duplicate removed",
+                                        existing_iface,
+                                        command_destination,
+                                    )
+                                elif message:
+                                    LOGGER.debug(
+                                        "[%s] DELETE %s – %s",
+                                        existing_iface,
+                                        command_destination,
+                                        message,
+                                    )
+                        flush_cmd = ["ip"]
+                        if family == 6:
+                            flush_cmd.append("-6")
+                        flush_cmd.extend(["route", "flush", "cache"])
+                        code, stdout, stderr = self._run_privileged(flush_cmd)
+                        message = stderr.strip() or stdout.strip()
+                        if code == 0:
+                            LOGGER.info("[system] FLUSH route cache")
+                        elif message:
+                            LOGGER.warning("[system] FLUSH route cache failed: %s", message)
+                    add_cmd = self._build_route_command(
                         "add",
                         command_destination,
                         interface,
                         family,
-                        metric_hint,
+                        0,
                     )
-                    code, stdout, stderr = self._run_privileged(cmd)
-                    if code != 0:
-                        message = stderr.strip() or stdout.strip()
-                        if "exists" in message.lower():
-                            if existing_prefix is not None and new_prefix is not None and new_prefix > existing_prefix:
-                                replace_cmd = self._build_route_command(
-                                    "replace",
-                                    command_destination,
-                                    interface,
-                                    family,
-                                    metric_hint,
-                                )
-                                repl_code, repl_stdout, repl_stderr = self._run_privileged(replace_cmd)
-                                if repl_code != 0:
-                                    LOGGER.error(
-                                        "Failed to install more specific route %s via %s: %s",
-                                        command_destination,
-                                        interface,
-                                        repl_stderr.strip() or repl_stdout.strip(),
-                                    )
-                                    continue
-                                applied.append(
-                                    AppliedRoute(
-                                        command_destination,
-                                        interface,
-                                        family,
-                                    )
-                                )
-                                LOGGER.info(
-                                    "Route %s added via %s (preferred over existing %s)",
-                                    command_destination,
-                                    interface,
-                                    existing.get("destination", "unknown"),
-                                )
-                                continue
-                            if not existing:
-                                LOGGER.error(
-                                    "Route %s already exists but could not capture current entry; skipping",
-                                    command_destination,
-                                )
-                                continue
-                            replace_cmd = self._build_route_command(
-                                "replace",
-                                command_destination,
-                                interface,
-                                family,
-                                metric_hint,
-                            )
-                            repl_code, repl_stdout, repl_stderr = self._run_privileged(replace_cmd)
-                            if repl_code != 0:
-                                LOGGER.error(
-                                    "Failed to replace existing route %s via %s: %s",
-                                    command_destination,
-                                    interface,
-                                    repl_stderr.strip() or repl_stdout.strip(),
-                                )
-                                continue
-                            applied.append(
-                                AppliedRoute(
-                                    command_destination,
-                                    interface,
-                                    family,
-                                    replaced=True,
-                                    previous=existing,
-                                )
-                            )
-                            LOGGER.info(
-                                "Route %s replaced with interface %s",
-                                command_destination,
-                                interface,
-                            )
-                            continue
-                        LOGGER.error(
-                            "Failed to add route %s via %s: %s",
-                            command_destination,
-                            interface,
-                            message,
+                    code, stdout, stderr = self._run_privileged(add_cmd)
+                    message = stderr.strip() or stdout.strip()
+                    if code == 0:
+                        LOGGER.info("[%s] ADD %s metric 0 – success", interface, command_destination)
+                        applied_route = AppliedRoute(
+                            destination=command_destination,
+                            interface=interface,
+                            family=family,
+                            replaced=bool(removed_entries),
+                            previous=removed_entries[0] if removed_entries else None,
                         )
+                        if removed_entries:
+                            applied_route.removed.extend(removed_entries)
+                        confirm = self._capture_existing_route(command_destination, family)
+                        if any(item.get("dev") == interface for item in confirm):
+                            LOGGER.info(
+                                "[%s] VERIFY %s via %s – confirmed",
+                                interface,
+                                command_destination,
+                                interface,
+                            )
+                        else:
+                            LOGGER.warning(
+                                "[%s] VERIFY %s – expected interface %s not found",
+                                interface,
+                                command_destination,
+                                interface,
+                            )
+                        applied.append(applied_route)
+                        break
+                    if message and "exists" in message.lower() and attempt == 0:
+                        LOGGER.info(
+                            "[system] RETRY %s – duplicate detected, retrying once",
+                            command_destination,
+                        )
+                        attempt += 1
+                        time.sleep(0.5)
                         continue
-                    applied.append(AppliedRoute(command_destination, interface, family))
-                    LOGGER.info("Route %s added via %s", command_destination, interface)
-                except Exception as exc:
-                    LOGGER.exception("Exception while adding route %s: %s", command_destination, exc)
+                    LOGGER.error(
+                        "[%s] ADD %s metric 0 failed: %s",
+                        interface,
+                        command_destination,
+                        message or "unknown error",
+                    )
+                    if removed_entries:
+                        LOGGER.info(
+                            "[%s] RESTORE %s – reapplying %d previously removed route(s)",
+                            interface,
+                            command_destination,
+                            len(removed_entries),
+                        )
+                        restoration = AppliedRoute(
+                            destination=command_destination,
+                            interface=interface,
+                            family=family,
+                        )
+                        for entry in removed_entries:
+                            self._restore_previous_route(restoration, entry)
+                    break
         if applied:
             self._session_routes[session_id] = applied
 
@@ -439,66 +372,128 @@ class RouteManager:
         LOGGER.info("Cleaning custom routes for session %s", session_id)
         for route in applied:
             try:
-                if route.replaced and route.previous:
-                    self._restore_previous_route(route)
-                    continue
-                cmd = self._build_route_command(
-                    "del", route.destination, route.interface, route.family
+                LOGGER.info(
+                    "[%s] DISCONNECTED – removing overrides for %s",
+                    route.interface,
+                    route.destination,
                 )
-                code, stdout, stderr = self._run_privileged(cmd)
-                if code != 0:
-                    message = stderr.strip() or stdout.strip()
-                    lowered = message.lower()
-                    if "cannot find device" in lowered or "no such device" in lowered:
-                        remaining_routes = self._show_routes(route.destination, route.family)
-                        if not remaining_routes:
-                            LOGGER.info(
-                                "Route %s no longer present during cleanup", route.destination
-                            )
-                            continue
-                        vpn_route = next(
-                            (entry for entry in remaining_routes if entry.get("dev") == route.interface),
-                            None,
-                        )
-                        if not vpn_route:
-                            LOGGER.info(
-                                "Skipping removal of %s; remaining route now targets %s",
-                                route.destination,
-                                remaining_routes[0].get("dev", "another interface"),
-                            )
-                            continue
-                        fallback_cmd = ["ip"]
-                        if route.family == 6:
-                            fallback_cmd.append("-6")
-                        fallback_cmd.extend(["route", "del", vpn_route["destination"]])
-                        if "via" in vpn_route:
-                            fallback_cmd.extend(["via", vpn_route["via"]])
-                        if "metric" in vpn_route:
-                            fallback_cmd.extend(["metric", vpn_route["metric"]])
-                        fb_code, fb_stdout, fb_stderr = self._run_privileged(fallback_cmd)
-                        if fb_code == 0:
-                            LOGGER.info(
-                                "Route %s removed (interface %s already absent)",
-                                route.destination,
-                                route.interface,
-                            )
-                            continue
-                        fb_message = fb_stderr.strip() or fb_stdout.strip()
-                        if "no such process" in fb_message.lower():
-                            LOGGER.info(
-                                "Route %s no longer present during cleanup", route.destination
-                            )
-                            continue
-                        LOGGER.warning(
-                            "Failed to remove route %s after fallback: %s",
-                            route.destination,
-                            fb_message,
-                        )
-                        continue
-                    LOGGER.warning(
-                        "Failed to remove route %s: %s", route.destination, message
+                delete_cmd = self._build_route_command(
+                    "del",
+                    route.destination,
+                    route.interface,
+                    route.family,
+                )
+                code, stdout, stderr = self._run_privileged(delete_cmd)
+                message = stderr.strip() or stdout.strip()
+                if code == 0:
+                    LOGGER.info(
+                        "[%s] DELETE %s – removed",
+                        route.interface,
+                        route.destination,
                     )
-                else:
-                    LOGGER.info("Route %s removed", route.destination)
+                elif message:
+                    LOGGER.warning(
+                        "[%s] DELETE %s failed: %s",
+                        route.interface,
+                        route.destination,
+                        message,
+                    )
+                flush_cmd = ["ip"]
+                if route.family == 6:
+                    flush_cmd.append("-6")
+                flush_cmd.extend(["route", "flush", "cache"])
+                flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
+                flush_message = flush_stderr.strip() or flush_stdout.strip()
+                if flush_code == 0:
+                    LOGGER.info("[system] FLUSH route cache")
+                elif flush_message:
+                    LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
+
+                restored = False
+                normalized_destination = route.destination
+                current_interfaces = set(psutil.net_if_addrs().keys())
+                for other_session, routes in self._session_routes.items():
+                    if restored:
+                        break
+                    for other_route in routes:
+                        other_destination = self._normalize_destination(
+                            other_route.destination,
+                            other_route.family,
+                        )
+                        if other_destination != normalized_destination:
+                            continue
+                        if other_route.interface not in current_interfaces:
+                            LOGGER.debug(
+                                "[%s] RESTORE %s skipped – interface unavailable",
+                                other_route.interface,
+                                normalized_destination,
+                            )
+                            continue
+                        add_cmd = self._build_route_command(
+                            "add",
+                            normalized_destination,
+                            other_route.interface,
+                            other_route.family,
+                            0,
+                        )
+                        code, stdout, stderr = self._run_privileged(add_cmd)
+                        message = stderr.strip() or stdout.strip()
+                        if code == 0:
+                            LOGGER.info(
+                                "[%s] RESTORE %s metric 0 – success",
+                                other_route.interface,
+                                normalized_destination,
+                            )
+                            restored = True
+                        elif message and "exists" in message.lower():
+                            LOGGER.info(
+                                "[%s] RESTORE %s metric 0 – already present",
+                                other_route.interface,
+                                normalized_destination,
+                            )
+                            restored = True
+                        elif message:
+                            LOGGER.error(
+                                "[%s] RESTORE %s metric 0 failed: %s",
+                                other_route.interface,
+                                normalized_destination,
+                                message,
+                            )
+                        retry_flush_code, retry_flush_stdout, retry_flush_stderr = self._run_privileged(flush_cmd)
+                        retry_message = retry_flush_stderr.strip() or retry_flush_stdout.strip()
+                        if retry_flush_code == 0:
+                            LOGGER.info("[system] FLUSH route cache")
+                        elif retry_message:
+                            LOGGER.warning("[system] FLUSH route cache failed: %s", retry_message)
+                        if restored:
+                            other_route.replaced = False
+                            break
+                if restored:
+                    continue
+                for entry in route.removed:
+                    if self._restore_previous_route(route, entry):
+                        flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
+                        flush_message = flush_stderr.strip() or flush_stdout.strip()
+                        if flush_code == 0:
+                            LOGGER.info("[system] FLUSH route cache")
+                        elif flush_message:
+                            LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
+                        restored = True
+                        break
+                if restored:
+                    continue
+                if route.previous and self._restore_previous_route(route):
+                    flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
+                    flush_message = flush_stderr.strip() or flush_stdout.strip()
+                    if flush_code == 0:
+                        LOGGER.info("[system] FLUSH route cache")
+                    elif flush_message:
+                        LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
+                    continue
+                LOGGER.info(
+                    "[%s] DISCONNECTED – no restoration target for %s",
+                    route.interface,
+                    route.destination,
+                )
             except Exception as exc:
                 LOGGER.exception("Exception while removing route %s: %s", route.destination, exc)
