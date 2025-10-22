@@ -362,10 +362,41 @@ class RouteManager:
                 if route.replaced and route.previous:
                     self._restore_previous_route(route)
                     continue
-                cmd = self._build_route_command("del", route.destination, route.interface, route.family)
+                cmd = self._build_route_command(
+                    "del", route.destination, route.interface, route.family
+                )
                 code, stdout, stderr = self._run_privileged(cmd)
                 if code != 0:
-                    LOGGER.warning("Failed to remove route %s: %s", route.destination, stderr.strip())
+                    message = stderr.strip() or stdout.strip()
+                    lowered = message.lower()
+                    if "cannot find device" in lowered or "no such device" in lowered:
+                        fallback_cmd = ["ip"]
+                        if route.family == 6:
+                            fallback_cmd.append("-6")
+                        fallback_cmd.extend(["route", "del", route.destination])
+                        fb_code, fb_stdout, fb_stderr = self._run_privileged(fallback_cmd)
+                        if fb_code == 0:
+                            LOGGER.info(
+                                "Route %s removed (interface %s already absent)",
+                                route.destination,
+                                route.interface,
+                            )
+                            continue
+                        fb_message = fb_stderr.strip() or fb_stdout.strip()
+                        if "no such process" in fb_message.lower():
+                            LOGGER.info(
+                                "Route %s no longer present during cleanup", route.destination
+                            )
+                            continue
+                        LOGGER.warning(
+                            "Failed to remove route %s after fallback: %s",
+                            route.destination,
+                            fb_message,
+                        )
+                        continue
+                    LOGGER.warning(
+                        "Failed to remove route %s: %s", route.destination, message
+                    )
                 else:
                     LOGGER.info("Route %s removed", route.destination)
             except Exception as exc:
