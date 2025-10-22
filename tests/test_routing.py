@@ -188,3 +188,29 @@ def test_apply_routes_replaces_matching_prefix_and_restores(route_manager, monke
         ]
     ]
     assert "replace" not in route_manager._session_routes
+
+
+def test_cleanup_handles_missing_interface(route_manager, monkeypatch):
+    """Cleaning up should succeed even if the VPN device has disappeared."""
+
+    commands: List[List[str]] = []
+
+    def fake_run(command: List[str]):
+        commands.append(command)
+        if command[2] == "add":
+            return 0, "", ""
+        if command[2] == "del" and len(command) > 4:
+            return 2, "", 'Cannot find device "ppp0"'
+        return 0, "", ""
+
+    monkeypatch.setattr(route_manager, "_run_privileged", fake_run)
+
+    route_manager.apply_routes("missing", ["192.0.2.5"], "ppp0")
+    commands.clear()
+
+    route_manager.cleanup("missing")
+    assert commands == [
+        ["ip", "route", "del", "192.0.2.5/32", "dev", "ppp0"],
+        ["ip", "route", "del", "192.0.2.5/32"],
+    ]
+    assert "missing" not in route_manager._session_routes
