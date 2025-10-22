@@ -7,7 +7,7 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import psutil
 
@@ -15,6 +15,8 @@ from .logging_manager import get_logging_manager
 from .privilege import PrivilegeManager
 
 LOGGER = get_logging_manager().logger
+
+IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 
 @dataclass
@@ -153,6 +155,73 @@ class RouteManager:
             idx += 1
         return route
 
+    def _show_routes(self, destination: str, family: int) -> List[Dict[str, str]]:
+        """Return all routes currently matching a destination."""
+        command = ["ip"]
+        if family == 6:
+            command.append("-6")
+        command.extend(["route", "show", destination])
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return []
+        routes: List[Dict[str, str]] = []
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            routes.append(self._parse_route_line(line))
+        return routes
+
+    def _collect_vpn_addresses(self) -> Dict[int, Set[IPAddress]]:
+        """Return the set of IP addresses currently assigned to VPN interfaces."""
+        vpn_addresses: Dict[int, Set[IPAddress]] = {4: set(), 6: set()}
+        try:
+            interfaces = psutil.net_if_addrs()
+        except Exception:
+            return vpn_addresses
+        for name, addresses in interfaces.items():
+            if not (name.startswith("ppp") or name.startswith("tun")):
+                continue
+            for entry in addresses:
+                ip_value = getattr(entry, "address", None)
+                family = getattr(entry, "family", None)
+                if not ip_value or family not in {socket.AF_INET, socket.AF_INET6}:
+                    continue
+                if "%" in ip_value:
+                    ip_value = ip_value.split("%", 1)[0]
+                try:
+                    ip_obj = ipaddress.ip_address(ip_value)
+                except ValueError:
+                    continue
+                vpn_addresses[ip_obj.version].add(ip_obj)
+        return vpn_addresses
+
+    def _match_vpn_endpoint(
+        self,
+        destination: str,
+        family: int,
+        vpn_addresses: Dict[int, Set[IPAddress]],
+        prefix_length: Optional[int],
+    ) -> Optional[str]:
+        """Return the VPN endpoint address if the destination targets it."""
+        if prefix_length not in {32, 128}:
+            return None
+        candidates = vpn_addresses.get(family)
+        if not candidates:
+            return None
+        try:
+            network = ipaddress.ip_network(destination, strict=False)
+        except ValueError:
+            try:
+                host = ipaddress.ip_address(destination)
+            except ValueError:
+                return None
+            return str(host) if host in candidates else None
+        for address in candidates:
+            if address in network:
+                return str(address)
+        return None
+
     def _restore_previous_route(self, route: AppliedRoute) -> None:
         if not route.previous:
             return
@@ -205,6 +274,7 @@ class RouteManager:
                     session_id,
                 )
                 return
+        vpn_addresses = self._collect_vpn_addresses()
         for entry in targets:
             try:
                 destinations = self._resolve_targets(entry)
@@ -216,8 +286,18 @@ class RouteManager:
                 continue
             for destination, family in destinations:
                 command_destination = self._normalize_destination(destination, family)
-                existing = self._capture_existing_route(destination, family)
                 new_prefix = self._prefix_length(command_destination, family)
+                matched_endpoint = self._match_vpn_endpoint(
+                    command_destination, family, vpn_addresses, new_prefix
+                )
+                if matched_endpoint:
+                    LOGGER.info(
+                        "Skipping custom route %s; matches VPN endpoint %s",
+                        command_destination,
+                        matched_endpoint,
+                    )
+                    continue
+                existing = self._capture_existing_route(destination, family)
                 existing_prefix = (
                     self._prefix_length(existing["destination"], family)
                     if existing and "destination" in existing
@@ -370,10 +450,31 @@ class RouteManager:
                     message = stderr.strip() or stdout.strip()
                     lowered = message.lower()
                     if "cannot find device" in lowered or "no such device" in lowered:
+                        remaining_routes = self._show_routes(route.destination, route.family)
+                        if not remaining_routes:
+                            LOGGER.info(
+                                "Route %s no longer present during cleanup", route.destination
+                            )
+                            continue
+                        vpn_route = next(
+                            (entry for entry in remaining_routes if entry.get("dev") == route.interface),
+                            None,
+                        )
+                        if not vpn_route:
+                            LOGGER.info(
+                                "Skipping removal of %s; remaining route now targets %s",
+                                route.destination,
+                                remaining_routes[0].get("dev", "another interface"),
+                            )
+                            continue
                         fallback_cmd = ["ip"]
                         if route.family == 6:
                             fallback_cmd.append("-6")
-                        fallback_cmd.extend(["route", "del", route.destination])
+                        fallback_cmd.extend(["route", "del", vpn_route["destination"]])
+                        if "via" in vpn_route:
+                            fallback_cmd.extend(["via", vpn_route["via"]])
+                        if "metric" in vpn_route:
+                            fallback_cmd.extend(["metric", vpn_route["metric"]])
                         fb_code, fb_stdout, fb_stderr = self._run_privileged(fallback_cmd)
                         if fb_code == 0:
                             LOGGER.info(
