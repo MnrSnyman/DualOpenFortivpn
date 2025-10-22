@@ -65,11 +65,12 @@ class RouteManager:
                 seen: set[str] = set()
                 for entry in info:
                     addr = entry[4][0]
-                    if addr in seen:
+                    network = ipaddress.ip_network(addr, strict=False)
+                    destination = str(network)
+                    if destination in seen:
                         continue
-                    seen.add(addr)
-                    family = 6 if ":" in addr else 4
-                    destinations.append((addr, family))
+                    seen.add(destination)
+                    destinations.append((destination, network.version))
         return destinations
 
     def _detect_interface(self, previous: List[str]) -> Optional[str]:
