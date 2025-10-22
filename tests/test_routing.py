@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import namedtuple
 from typing import Dict, List, Tuple
 
+import socket
 import pytest
 
 pytest.importorskip("psutil")
@@ -190,6 +192,46 @@ def test_apply_routes_replaces_matching_prefix_and_restores(route_manager, monke
     assert "replace" not in route_manager._session_routes
 
 
+def test_apply_routes_skips_vpn_endpoint_addresses(route_manager, monkeypatch):
+    """Host routes targeting VPN interface addresses should be ignored."""
+
+    commands: List[List[str]] = []
+
+    def fake_run(command: List[str]):
+        commands.append(command)
+        return 0, "", ""
+
+    monkeypatch.setattr(route_manager, "_run_privileged", fake_run)
+
+    Address = namedtuple("Address", ["family", "address", "netmask", "broadcast", "ptp"])
+
+    def fake_addrs():
+        return {
+            "ppp0": [Address(socket.AF_INET, "10.0.0.2", None, None, None)],
+            "ppp1": [Address(socket.AF_INET, "10.0.1.2", None, None, None)],
+        }
+
+    monkeypatch.setattr("core.routing.psutil.net_if_addrs", fake_addrs)
+
+    route_manager.apply_routes(
+        "vpn",
+        ["10.0.0.2", "10.0.1.2", "198.51.100.10"],
+        "ppp0",
+    )
+
+    assert commands == [
+        ["ip", "route", "add", "198.51.100.10/32", "dev", "ppp0", "metric", "1"]
+    ]
+    applied_routes = route_manager._session_routes["vpn"]
+    assert len(applied_routes) == 1
+    assert applied_routes[0].destination == "198.51.100.10/32"
+
+    commands.clear()
+    route_manager.cleanup("vpn")
+    assert commands == [["ip", "route", "del", "198.51.100.10/32", "dev", "ppp0"]]
+    assert "vpn" not in route_manager._session_routes
+
+
 def test_cleanup_handles_missing_interface(route_manager, monkeypatch):
     """Cleaning up should succeed even if the VPN device has disappeared."""
 
@@ -204,6 +246,11 @@ def test_cleanup_handles_missing_interface(route_manager, monkeypatch):
         return 0, "", ""
 
     monkeypatch.setattr(route_manager, "_run_privileged", fake_run)
+    monkeypatch.setattr(
+        route_manager,
+        "_show_routes",
+        lambda *_: [{"destination": "192.0.2.5/32", "dev": "ppp0", "metric": "1"}],
+    )
 
     route_manager.apply_routes("missing", ["192.0.2.5"], "ppp0")
     commands.clear()
@@ -211,6 +258,34 @@ def test_cleanup_handles_missing_interface(route_manager, monkeypatch):
     route_manager.cleanup("missing")
     assert commands == [
         ["ip", "route", "del", "192.0.2.5/32", "dev", "ppp0"],
-        ["ip", "route", "del", "192.0.2.5/32"],
+        ["ip", "route", "del", "192.0.2.5/32", "metric", "1"],
     ]
     assert "missing" not in route_manager._session_routes
+
+
+def test_cleanup_skips_routes_for_other_interfaces(route_manager, monkeypatch):
+    """Fallback cleanup should not delete routes that moved to another device."""
+
+    commands: List[List[str]] = []
+
+    def fake_run(command: List[str]):
+        commands.append(command)
+        if command[2] == "add":
+            return 0, "", ""
+        if command[2] == "del" and len(command) > 4:
+            return 2, "", 'Cannot find device "ppp0"'
+        return 0, "", ""
+
+    monkeypatch.setattr(route_manager, "_run_privileged", fake_run)
+    monkeypatch.setattr(
+        route_manager,
+        "_show_routes",
+        lambda *_: [{"destination": "192.0.2.5/32", "dev": "eth0"}],
+    )
+
+    route_manager.apply_routes("skip", ["192.0.2.5"], "ppp0")
+    commands.clear()
+
+    route_manager.cleanup("skip")
+    assert commands == [["ip", "route", "del", "192.0.2.5/32", "dev", "ppp0"]]
+    assert "skip" not in route_manager._session_routes
