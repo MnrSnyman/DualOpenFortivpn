@@ -347,6 +347,20 @@ class RouteManager:
                         command_destination,
                         message or "unknown error",
                     )
+                    if removed_entries:
+                        LOGGER.info(
+                            "[%s] RESTORE %s – reapplying %d previously removed route(s)",
+                            interface,
+                            command_destination,
+                            len(removed_entries),
+                        )
+                        restoration = AppliedRoute(
+                            destination=command_destination,
+                            interface=interface,
+                            family=family,
+                        )
+                        for entry in removed_entries:
+                            self._restore_previous_route(restoration, entry)
                     break
         if applied:
             self._session_routes[session_id] = applied
