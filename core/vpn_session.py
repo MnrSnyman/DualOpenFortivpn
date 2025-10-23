@@ -53,26 +53,13 @@ class VPNSession(QThread):
         self._stop_event.set()
         process = self._process
         if process and process.poll() is None:
+            pgid = None
             try:
-                # Ensure every process in the privilege-elevated session receives
-                # the termination request so openfortivpn is killed even when
-                # launched through pkexec or sudo.
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except Exception:
-                    process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except Exception:
-                        process.kill()
+                pgid = os.getpgid(process.pid)
             except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+                pgid = process.pid
+            if not self._terminate_local_process(process) and pgid is not None:
+                self._terminate_privileged_group(process, pgid)
         self._route_manager.cleanup(self.profile.name)
         self._routes_applied = False
         self._browser_launched = False
@@ -226,3 +213,50 @@ class VPNSession(QThread):
         except Exception as exc:
             LOGGER.error("Failed to open browser %s: %s", info.name, exc)
             webbrowser.open(url)
+
+    def _terminate_local_process(self, process: subprocess.Popen[str]) -> bool:
+        """Attempt to terminate the privileged process tree without escalation."""
+
+        for sig, wait_timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+            try:
+                os.killpg(process.pid, sig)
+            except Exception:
+                try:
+                    if sig == signal.SIGTERM:
+                        process.terminate()
+                    else:
+                        process.kill()
+                except Exception:
+                    pass
+            try:
+                process.wait(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                continue
+            except Exception:
+                continue
+            if process.poll() is not None:
+                return True
+        return process.poll() is not None
+
+    def _terminate_privileged_group(self, process: subprocess.Popen[str], pgid: int) -> None:
+        """Forcefully terminate a process group via the privilege manager."""
+
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            success = False
+            try:
+                success = self._privilege_manager.terminate_process_group(pgid, sig)
+            except Exception as exc:
+                sig_name = getattr(sig, "name", str(sig))
+                LOGGER.warning(
+                    "Failed to escalate %s for process group %s: %s", sig_name, pgid, exc
+                )
+            if not success:
+                continue
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                continue
+            except Exception:
+                continue
+            if process.poll() is not None:
+                return

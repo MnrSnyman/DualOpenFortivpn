@@ -61,6 +61,13 @@ class MainWindow(QMainWindow):
         self.browser_catalog: Dict[str, BrowserInfo] = {browser.key: browser for browser in self.browsers}
         self.privilege_manager = PrivilegeManager(self._request_sudo_password)
         self.route_manager = RouteManager(self.privilege_manager)
+        if not self.privilege_manager.has_pkexec():
+            try:
+                self.privilege_manager.cache_password_for_session()
+            except RuntimeError as exc:
+                self.logging_manager.logger.warning(
+                    "Sudo password not cached at startup: %s", exc
+                )
         self.sessions: Dict[str, VPNSession] = {}
         self.session_status: Dict[str, str] = {}
         self.profile_rows: Dict[str, int] = {}
@@ -308,7 +315,7 @@ class MainWindow(QMainWindow):
                 self._update_table_username(profile.name, username)
         if not self.privilege_manager.has_pkexec():
             try:
-                self.privilege_manager.ensure_password_cached()
+                self.privilege_manager.ensure_password_cached(force_allow=True)
             except RuntimeError as exc:
                 QMessageBox.warning(self, "Privilege", str(exc))
                 return
@@ -328,8 +335,6 @@ class MainWindow(QMainWindow):
             session.wait(5000)
             del self.sessions[name]
             self._update_status(name, "Disconnected")
-            if not self.sessions and not self.privilege_manager.cache_allowed():
-                self.privilege_manager.clear_cached_password()
 
     def _log_session_output(self, profile: str, message: str) -> None:
         self.logging_manager.logger.info("[%s] %s", profile, message)
@@ -342,8 +347,6 @@ class MainWindow(QMainWindow):
             session = self.sessions.pop(name)
             session.wait(1000)
         self._update_status(name, "Disconnected")
-        if not self.sessions and not self.privilege_manager.cache_allowed():
-            self.privilege_manager.clear_cached_password()
 
     def _update_status(self, name: str, status: str) -> None:
         self.session_status[name] = status
@@ -389,6 +392,5 @@ class MainWindow(QMainWindow):
             session.wait(5000)
         self.sessions.clear()
         self.logging_manager.remove_listener(self._log_listener)
-        if not self.privilege_manager.cache_allowed():
-            self.privilege_manager.clear_cached_password()
+        self.privilege_manager.clear_cached_password()
         super().closeEvent(event)
