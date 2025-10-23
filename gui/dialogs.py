@@ -215,15 +215,13 @@ class SudoPasswordDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Administrator access required")
         layout = QVBoxLayout(self)
-        label = QLabel(
-            "Enter your sudo password to run openfortivpn. The password will be reused "
-            "until you close OpenFortiVPN Manager."
-        )
-        label.setWordWrap(True)
+        label = QLabel("Enter your sudo password to run openfortivpn.")
         layout.addWidget(label)
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.password_edit)
+        self.remember_check = QCheckBox("Remember password for this session")
+        layout.addWidget(self.remember_check)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
@@ -238,4 +236,4 @@ class SudoPasswordDialog(QDialog):
     def get_password(self) -> Optional[Tuple[str, bool]]:
         if self.exec() != QDialog.DialogCode.Accepted:
             return None
-        return self.password_edit.text(), True
+        return self.password_edit.text(), self.remember_check.isChecked()

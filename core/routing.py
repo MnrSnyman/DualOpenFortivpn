@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -33,21 +34,10 @@ class RouteManager:
     def __init__(self, privilege_manager: PrivilegeManager) -> None:
         self._privilege_manager = privilege_manager
         self._session_routes: Dict[str, List[AppliedRoute]] = {}
+        self._lock = threading.RLock()
 
     def _run_privileged(self, command: List[str]) -> Tuple[int, str, str]:
-        argv, password = self._privilege_manager.build_command(command)
-        process = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE if password else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if password and process.stdin:
-            process.stdin.write(password + "\n")
-            process.stdin.flush()
-        stdout, stderr = process.communicate()
-        return process.returncode, stdout, stderr
+        return self._privilege_manager.run_privileged(command)
 
     def _resolve_targets(self, target: str) -> List[Tuple[str, int]]:
         """Expand a user-specified target into concrete destinations."""
@@ -208,8 +198,6 @@ class RouteManager:
         if not interface:
             LOGGER.warning("Unable to determine VPN interface for session %s; skipping routes", session_id)
             return
-        applied: List[AppliedRoute] = []
-        # Give the PPP/TUN device time to settle before manipulating the table.
         if interface not in psutil.net_if_addrs():
             for _ in range(20):
                 time.sleep(0.25)
@@ -223,263 +211,283 @@ class RouteManager:
                 )
                 return
         time.sleep(1)
-        for entry in targets:
-            try:
-                destinations = self._resolve_targets(entry)
-            except Exception as exc:
-                LOGGER.error("Failed to resolve route target %s: %s", entry, exc)
-                continue
-            if not destinations:
-                LOGGER.error("No addresses resolved for route target %s", entry)
-                continue
-            for destination, family in destinations:
-                command_destination = self._normalize_destination(destination, family)
-                attempt = 0
-                removed_entries: List[Dict[str, str]] = []
-                seen_signatures: set[Tuple[str, str, str, str]] = set()
-                while True:
-                    duplicates = self._capture_existing_route(command_destination, family)
-                    if duplicates:
-                        LOGGER.info(
-                            "[%s] DELETE %s – removing %d existing entries",
-                            interface,
-                            command_destination,
-                            len(duplicates),
-                        )
-                        general_delete = self._build_route_command("del", command_destination, None, family)
-                        code, stdout, stderr = self._run_privileged(general_delete)
-                        message = stderr.strip() or stdout.strip()
-                        if code == 0:
-                            LOGGER.info("[system] DELETE %s – duplicate removed", command_destination)
-                        elif message:
-                            LOGGER.debug("[system] DELETE %s – %s", command_destination, message)
-                        for existing_entry in duplicates:
-                            signature = (
-                                existing_entry.get("destination", ""),
-                                existing_entry.get("dev", ""),
-                                existing_entry.get("via", ""),
-                                existing_entry.get("metric", ""),
-                            )
-                            if signature not in seen_signatures:
-                                removed_entries.append(existing_entry)
-                                seen_signatures.add(signature)
-                            existing_iface = existing_entry.get("dev")
-                            if existing_iface:
-                                specific_delete = self._build_route_command(
-                                    "del",
-                                    command_destination,
-                                    existing_iface,
-                                    family,
-                                )
-                                code, stdout, stderr = self._run_privileged(specific_delete)
-                                message = stderr.strip() or stdout.strip()
-                                if code == 0:
-                                    LOGGER.info(
-                                        "[%s] DELETE %s – duplicate removed",
-                                        existing_iface,
-                                        command_destination,
-                                    )
-                                elif message:
-                                    LOGGER.debug(
-                                        "[%s] DELETE %s – %s",
-                                        existing_iface,
-                                        command_destination,
-                                        message,
-                                    )
-                        flush_cmd = ["ip"]
-                        if family == 6:
-                            flush_cmd.append("-6")
-                        flush_cmd.extend(["route", "flush", "cache"])
-                        code, stdout, stderr = self._run_privileged(flush_cmd)
-                        message = stderr.strip() or stdout.strip()
-                        if code == 0:
-                            LOGGER.info("[system] FLUSH route cache")
-                        elif message:
-                            LOGGER.warning("[system] FLUSH route cache failed: %s", message)
-                    add_cmd = self._build_route_command(
-                        "add",
-                        command_destination,
-                        interface,
-                        family,
-                        0,
-                    )
-                    code, stdout, stderr = self._run_privileged(add_cmd)
-                    message = stderr.strip() or stdout.strip()
-                    if code == 0:
-                        LOGGER.info("[%s] ADD %s metric 0 – success", interface, command_destination)
-                        applied_route = AppliedRoute(
-                            destination=command_destination,
-                            interface=interface,
-                            family=family,
-                            replaced=bool(removed_entries),
-                            previous=removed_entries[0] if removed_entries else None,
-                        )
-                        if removed_entries:
-                            applied_route.removed.extend(removed_entries)
-                        confirm = self._capture_existing_route(command_destination, family)
-                        if any(item.get("dev") == interface for item in confirm):
+        with self._lock:
+            applied: List[AppliedRoute] = []
+            # Clear out any stale state from previous connection attempts.
+            self._session_routes.pop(session_id, None)
+            for entry in targets:
+                try:
+                    destinations = self._resolve_targets(entry)
+                except Exception as exc:
+                    LOGGER.error("Failed to resolve route target %s: %s", entry, exc)
+                    continue
+                if not destinations:
+                    LOGGER.error("No addresses resolved for route target %s", entry)
+                    continue
+                for destination, family in destinations:
+                    command_destination = self._normalize_destination(destination, family)
+                    attempt = 0
+                    removed_entries: List[Dict[str, str]] = []
+                    seen_signatures: set[Tuple[str, str, str, str]] = set()
+                    while True:
+                        duplicates = self._capture_existing_route(command_destination, family)
+                        if duplicates:
                             LOGGER.info(
-                                "[%s] VERIFY %s via %s – confirmed",
+                                "[%s] DELETE %s – removing %d existing entries",
                                 interface,
                                 command_destination,
-                                interface,
+                                len(duplicates),
                             )
-                        else:
-                            LOGGER.warning(
-                                "[%s] VERIFY %s – expected interface %s not found",
-                                interface,
-                                command_destination,
-                                interface,
-                            )
-                        applied.append(applied_route)
-                        break
-                    if message and "exists" in message.lower() and attempt == 0:
-                        LOGGER.info(
-                            "[system] RETRY %s – duplicate detected, retrying once",
-                            command_destination,
-                        )
-                        attempt += 1
-                        time.sleep(0.5)
-                        continue
-                    LOGGER.error(
-                        "[%s] ADD %s metric 0 failed: %s",
-                        interface,
-                        command_destination,
-                        message or "unknown error",
-                    )
-                    break
-        if applied:
-            self._session_routes[session_id] = applied
-
-    def cleanup(self, session_id: str) -> None:
-        applied = self._session_routes.pop(session_id, [])
-        if not applied:
-            return
-        LOGGER.info("Cleaning custom routes for session %s", session_id)
-        for route in applied:
-            try:
-                LOGGER.info(
-                    "[%s] DISCONNECTED – removing overrides for %s",
-                    route.interface,
-                    route.destination,
-                )
-                delete_cmd = self._build_route_command(
-                    "del",
-                    route.destination,
-                    route.interface,
-                    route.family,
-                )
-                code, stdout, stderr = self._run_privileged(delete_cmd)
-                message = stderr.strip() or stdout.strip()
-                if code == 0:
-                    LOGGER.info(
-                        "[%s] DELETE %s – removed",
-                        route.interface,
-                        route.destination,
-                    )
-                elif message:
-                    LOGGER.warning(
-                        "[%s] DELETE %s failed: %s",
-                        route.interface,
-                        route.destination,
-                        message,
-                    )
-                flush_cmd = ["ip"]
-                if route.family == 6:
-                    flush_cmd.append("-6")
-                flush_cmd.extend(["route", "flush", "cache"])
-                flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
-                flush_message = flush_stderr.strip() or flush_stdout.strip()
-                if flush_code == 0:
-                    LOGGER.info("[system] FLUSH route cache")
-                elif flush_message:
-                    LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
-
-                restored = False
-                normalized_destination = route.destination
-                current_interfaces = set(psutil.net_if_addrs().keys())
-                for other_session, routes in self._session_routes.items():
-                    if restored:
-                        break
-                    for other_route in routes:
-                        other_destination = self._normalize_destination(
-                            other_route.destination,
-                            other_route.family,
-                        )
-                        if other_destination != normalized_destination:
-                            continue
-                        if other_route.interface not in current_interfaces:
-                            LOGGER.debug(
-                                "[%s] RESTORE %s skipped – interface unavailable",
-                                other_route.interface,
-                                normalized_destination,
-                            )
-                            continue
+                            general_delete = self._build_route_command("del", command_destination, None, family)
+                            code, stdout, stderr = self._run_privileged(general_delete)
+                            message = stderr.strip() or stdout.strip()
+                            if code == 0:
+                                LOGGER.info("[system] DELETE %s – duplicate removed", command_destination)
+                            elif message:
+                                LOGGER.debug("[system] DELETE %s – %s", command_destination, message)
+                            for existing_entry in duplicates:
+                                signature = (
+                                    existing_entry.get("destination", ""),
+                                    existing_entry.get("dev", ""),
+                                    existing_entry.get("via", ""),
+                                    existing_entry.get("metric", ""),
+                                )
+                                if signature not in seen_signatures:
+                                    removed_entries.append(existing_entry)
+                                    seen_signatures.add(signature)
+                                existing_iface = existing_entry.get("dev")
+                                if existing_iface:
+                                    specific_delete = self._build_route_command(
+                                        "del",
+                                        command_destination,
+                                        existing_iface,
+                                        family,
+                                    )
+                                    code, stdout, stderr = self._run_privileged(specific_delete)
+                                    message = stderr.strip() or stdout.strip()
+                                    if code == 0:
+                                        LOGGER.info(
+                                            "[%s] DELETE %s – duplicate removed",
+                                            existing_iface,
+                                            command_destination,
+                                        )
+                                    elif message:
+                                        LOGGER.debug(
+                                            "[%s] DELETE %s – %s",
+                                            existing_iface,
+                                            command_destination,
+                                            message,
+                                        )
+                                    for routes in self._session_routes.values():
+                                        for tracked in routes:
+                                            tracked_destination = self._normalize_destination(
+                                                tracked.destination,
+                                                tracked.family,
+                                            )
+                                            if (
+                                                tracked_destination == command_destination
+                                                and tracked.interface == existing_iface
+                                            ):
+                                                tracked.replaced = True
+                            flush_cmd = ["ip"]
+                            if family == 6:
+                                flush_cmd.append("-6")
+                            flush_cmd.extend(["route", "flush", "cache"])
+                            code, stdout, stderr = self._run_privileged(flush_cmd)
+                            message = stderr.strip() or stdout.strip()
+                            if code == 0:
+                                LOGGER.info("[system] FLUSH route cache")
+                            elif message:
+                                LOGGER.warning("[system] FLUSH route cache failed: %s", message)
                         add_cmd = self._build_route_command(
                             "add",
-                            normalized_destination,
-                            other_route.interface,
-                            other_route.family,
+                            command_destination,
+                            interface,
+                            family,
                             0,
                         )
                         code, stdout, stderr = self._run_privileged(add_cmd)
                         message = stderr.strip() or stdout.strip()
                         if code == 0:
-                            LOGGER.info(
-                                "[%s] RESTORE %s metric 0 – success",
-                                other_route.interface,
-                                normalized_destination,
+                            LOGGER.info("[%s] ADD %s metric 0 – success", interface, command_destination)
+                            applied_route = AppliedRoute(
+                                destination=command_destination,
+                                interface=interface,
+                                family=family,
+                                replaced=bool(removed_entries),
+                                previous=removed_entries[0] if removed_entries else None,
                             )
-                            restored = True
-                        elif message and "exists" in message.lower():
-                            LOGGER.info(
-                                "[%s] RESTORE %s metric 0 – already present",
-                                other_route.interface,
-                                normalized_destination,
-                            )
-                            restored = True
-                        elif message:
-                            LOGGER.error(
-                                "[%s] RESTORE %s metric 0 failed: %s",
-                                other_route.interface,
-                                normalized_destination,
-                                message,
-                            )
-                        retry_flush_code, retry_flush_stdout, retry_flush_stderr = self._run_privileged(flush_cmd)
-                        retry_message = retry_flush_stderr.strip() or retry_flush_stdout.strip()
-                        if retry_flush_code == 0:
-                            LOGGER.info("[system] FLUSH route cache")
-                        elif retry_message:
-                            LOGGER.warning("[system] FLUSH route cache failed: %s", retry_message)
-                        if restored:
-                            other_route.replaced = False
+                            if removed_entries:
+                                applied_route.removed.extend(removed_entries)
+                            confirm = self._capture_existing_route(command_destination, family)
+                            if any(item.get("dev") == interface for item in confirm):
+                                LOGGER.info(
+                                    "[%s] VERIFY %s via %s – confirmed",
+                                    interface,
+                                    command_destination,
+                                    interface,
+                                )
+                            else:
+                                LOGGER.warning(
+                                    "[%s] VERIFY %s – expected interface %s not found",
+                                    interface,
+                                    command_destination,
+                                    interface,
+                                )
+                            applied.append(applied_route)
                             break
-                if restored:
-                    continue
-                for entry in route.removed:
-                    if self._restore_previous_route(route, entry):
-                        flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
-                        flush_message = flush_stderr.strip() or flush_stdout.strip()
-                        if flush_code == 0:
-                            LOGGER.info("[system] FLUSH route cache")
-                        elif flush_message:
-                            LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
-                        restored = True
+                        if message and "exists" in message.lower() and attempt == 0:
+                            LOGGER.info(
+                                "[system] RETRY %s – duplicate detected, retrying once",
+                                command_destination,
+                            )
+                            attempt += 1
+                            time.sleep(0.5)
+                            continue
+                        LOGGER.error(
+                            "[%s] ADD %s metric 0 failed: %s",
+                            interface,
+                            command_destination,
+                            message or "unknown error",
+                        )
                         break
-                if restored:
-                    continue
-                if route.previous and self._restore_previous_route(route):
+            if applied:
+                self._session_routes[session_id] = applied
+            else:
+                self._session_routes.pop(session_id, None)
+
+    def cleanup(self, session_id: str) -> None:
+        with self._lock:
+            applied = self._session_routes.pop(session_id, [])
+            if not applied:
+                return
+            LOGGER.info("Cleaning custom routes for session %s", session_id)
+            for route in applied:
+                try:
+                    LOGGER.info(
+                        "[%s] DISCONNECTED – removing overrides for %s",
+                        route.interface,
+                        route.destination,
+                    )
+                    delete_cmd = self._build_route_command(
+                        "del",
+                        route.destination,
+                        route.interface,
+                        route.family,
+                    )
+                    code, stdout, stderr = self._run_privileged(delete_cmd)
+                    message = stderr.strip() or stdout.strip()
+                    if code == 0:
+                        LOGGER.info(
+                            "[%s] DELETE %s – removed",
+                            route.interface,
+                            route.destination,
+                        )
+                    elif message:
+                        LOGGER.warning(
+                            "[%s] DELETE %s failed: %s",
+                            route.interface,
+                            route.destination,
+                            message,
+                        )
+                    flush_cmd = ["ip"]
+                    if route.family == 6:
+                        flush_cmd.append("-6")
+                    flush_cmd.extend(["route", "flush", "cache"])
                     flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
                     flush_message = flush_stderr.strip() or flush_stdout.strip()
                     if flush_code == 0:
                         LOGGER.info("[system] FLUSH route cache")
                     elif flush_message:
                         LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
-                    continue
-                LOGGER.info(
-                    "[%s] DISCONNECTED – no restoration target for %s",
-                    route.interface,
-                    route.destination,
-                )
-            except Exception as exc:
-                LOGGER.exception("Exception while removing route %s: %s", route.destination, exc)
+
+                    restored = False
+                    normalized_destination = route.destination
+                    current_interfaces = set(psutil.net_if_addrs().keys())
+                    for other_session, routes in self._session_routes.items():
+                        if restored:
+                            break
+                        for other_route in routes:
+                            other_destination = self._normalize_destination(
+                                other_route.destination,
+                                other_route.family,
+                            )
+                            if other_destination != normalized_destination:
+                                continue
+                            if not other_route.replaced:
+                                continue
+                            if other_route.interface not in current_interfaces:
+                                LOGGER.debug(
+                                    "[%s] RESTORE %s skipped – interface unavailable",
+                                    other_route.interface,
+                                    normalized_destination,
+                                )
+                                continue
+                            add_cmd = self._build_route_command(
+                                "add",
+                                normalized_destination,
+                                other_route.interface,
+                                other_route.family,
+                                0,
+                            )
+                            code, stdout, stderr = self._run_privileged(add_cmd)
+                            message = stderr.strip() or stdout.strip()
+                            if code == 0:
+                                LOGGER.info(
+                                    "[%s] RESTORE %s metric 0 – success",
+                                    other_route.interface,
+                                    normalized_destination,
+                                )
+                                restored = True
+                            elif message and "exists" in message.lower():
+                                LOGGER.info(
+                                    "[%s] RESTORE %s metric 0 – already present",
+                                    other_route.interface,
+                                    normalized_destination,
+                                )
+                                restored = True
+                            elif message:
+                                LOGGER.error(
+                                    "[%s] RESTORE %s metric 0 failed: %s",
+                                    other_route.interface,
+                                    normalized_destination,
+                                    message,
+                                )
+                            retry_flush_code, retry_flush_stdout, retry_flush_stderr = self._run_privileged(flush_cmd)
+                            retry_message = retry_flush_stderr.strip() or retry_flush_stdout.strip()
+                            if retry_flush_code == 0:
+                                LOGGER.info("[system] FLUSH route cache")
+                            elif retry_message:
+                                LOGGER.warning("[system] FLUSH route cache failed: %s", retry_message)
+                            if restored:
+                                other_route.replaced = False
+                                break
+                    if restored:
+                        continue
+                    for entry in route.removed:
+                        if self._restore_previous_route(route, entry):
+                            flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
+                            flush_message = flush_stderr.strip() or flush_stdout.strip()
+                            if flush_code == 0:
+                                LOGGER.info("[system] FLUSH route cache")
+                            elif flush_message:
+                                LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
+                            restored = True
+                            break
+                    if restored:
+                        continue
+                    if route.previous and self._restore_previous_route(route):
+                        flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
+                        flush_message = flush_stderr.strip() or flush_stdout.strip()
+                        if flush_code == 0:
+                            LOGGER.info("[system] FLUSH route cache")
+                        elif flush_message:
+                            LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
+                        continue
+                    LOGGER.info(
+                        "[%s] DISCONNECTED – no restoration target for %s",
+                        route.interface,
+                        route.destination,
+                    )
+                except Exception as exc:
+                    LOGGER.exception("Exception while removing route %s: %s", route.destination, exc)
