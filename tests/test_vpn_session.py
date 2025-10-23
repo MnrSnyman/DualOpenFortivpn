@@ -32,8 +32,8 @@ class DummyPrivilegeManager:
         self.calls = []
         self.process = None
 
-    def send_signal(self, pid, sig):
-        self.calls.append((pid, sig))
+    def terminate_process_group(self, pgid, sig):
+        self.calls.append((pgid, sig))
         if self.process is not None:
             self.process._running = False
         return True
@@ -53,7 +53,10 @@ class DummyProcess:
             return 0
         raise RuntimeError("Process still running")
 
-    def send_signal(self, sig):
+    def terminate(self):
+        raise PermissionError
+
+    def kill(self):
         raise PermissionError
 
 
@@ -62,7 +65,7 @@ class DummyStream:
         pass
 
 
-def test_stop_uses_privileged_signal():
+def test_stop_uses_privileged_group(monkeypatch):
     profile = VPNProfile(
         name="test",
         host="vpn.example.com",
@@ -76,8 +79,14 @@ def test_stop_uses_privileged_signal():
     privilege.process = process
     session._process = process
 
+    def deny_killpg(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr("core.vpn_session.os.killpg", deny_killpg)
+    monkeypatch.setattr("core.vpn_session.os.getpgid", lambda pid: pid)
+
     session.stop()
 
-    assert privilege.calls == [(4321, signal.SIGINT)]
+    assert privilege.calls == [(4321, signal.SIGTERM)]
     assert routes.cleaned == ["test"]
     assert process._running is False
