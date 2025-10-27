@@ -133,8 +133,14 @@ class RouteManager:
         routes: List[Dict[str, str]] = []
         for raw in lines:
             parsed = self._parse_route_line(raw)
-            if parsed:
-                routes.append(parsed)
+            if not parsed:
+                continue
+            parsed_destination = parsed.get("destination")
+            if not parsed_destination:
+                continue
+            normalized = self._normalize_destination(parsed_destination, family)
+            parsed["destination"] = normalized
+            routes.append(parsed)
         return routes
 
     def _parse_route_line(self, line: str) -> Dict[str, str]:
@@ -230,7 +236,11 @@ class RouteManager:
                     removed_entries: List[Dict[str, str]] = []
                     seen_signatures: set[Tuple[str, str, str, str]] = set()
                     while True:
-                        duplicates = self._capture_existing_route(command_destination, family)
+                        duplicates = [
+                            entry
+                            for entry in self._capture_existing_route(command_destination, family)
+                            if entry.get("destination") == command_destination
+                        ]
                         if duplicates:
                             LOGGER.info(
                                 "[%s] DELETE %s – removing %d existing entries",
@@ -238,7 +248,9 @@ class RouteManager:
                                 command_destination,
                                 len(duplicates),
                             )
-                            general_delete = self._build_route_command("del", command_destination, None, family)
+                            general_delete = self._build_route_command(
+                                "del", command_destination, None, family
+                            )
                             code, stdout, stderr = self._run_privileged(general_delete)
                             message = stderr.strip() or stdout.strip()
                             if code == 0:
