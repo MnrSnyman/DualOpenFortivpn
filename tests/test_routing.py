@@ -16,8 +16,14 @@ from core.routing import RouteManager
 class DummyPrivilegeManager:
     """Minimal privilege manager stub for exercising RouteManager."""
 
+    def __init__(self) -> None:
+        self.cache_requests = 0
+
     def build_command(self, command: List[str]) -> Tuple[List[str], None]:
         return command, None
+
+    def cache_password_for_session(self) -> None:
+        self.cache_requests += 1
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +106,21 @@ def test_apply_routes_keeps_ipv4_commands(route_manager, monkeypatch):
     ]
     assert "session4" not in route_manager._session_routes
 
+
+def test_apply_routes_caches_password_for_session(route_manager, monkeypatch):
+    """Route application should request a session-level sudo cache."""
+
+    commands: List[List[str]] = []
+
+    def fake_run(command: List[str]):
+        commands.append(command)
+        return 0, "", ""
+
+    monkeypatch.setattr(route_manager, "_run_privileged", fake_run)
+
+    route_manager.apply_routes("cache", ["10.0.0.0/24"], "ppp0")
+
+    assert route_manager._privilege_manager.cache_requests == 1
 
 def test_apply_routes_normalizes_host_targets(route_manager, monkeypatch):
     """Host addresses should be normalized to explicit /32 routes."""
