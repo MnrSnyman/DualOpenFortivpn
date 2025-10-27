@@ -46,7 +46,6 @@ class VPNSession(QThread):
         self._stop_event = threading.Event()
         self._process: Optional[subprocess.Popen[str]] = None
         self._interface_name: Optional[str] = None
-        self._routes_applied = False
         self._browser_launched = False
 
     def stop(self) -> None:
@@ -103,7 +102,6 @@ class VPNSession(QThread):
                 pass
         self._route_manager.cleanup(self.profile.name)
         self._interface_name = None
-        self._routes_applied = False
         self._browser_launched = False
         self._process = None
 
@@ -126,7 +124,6 @@ class VPNSession(QThread):
         self.status_changed.emit("Stopped")
 
     def _run_once(self) -> bool:
-        self._routes_applied = False
         self._browser_launched = False
         self._interface_name = None
         command = self._build_command()
@@ -229,13 +226,31 @@ class VPNSession(QThread):
                     _, password = self._credentials
                     self._process.stdin.write(password + "\n")
                     self._process.stdin.flush()
-        if self.profile.routes and not self._routes_applied and self._interface_name:
-            self._route_manager.apply_routes(
-                self.profile.name,
-                self.profile.routes,
-                self._interface_name,
-            )
-            self._routes_applied = True
+
+    def interface_name(self) -> Optional[str]:
+        """Expose the detected VPN interface for manual route operations."""
+        return self._interface_name
+
+    def apply_routes(self) -> bool:
+        """Apply custom routes on demand when triggered from the UI."""
+        if not self.profile.routes:
+            self.log_line.emit("No custom routes are configured for this profile.")
+            return False
+        if not self._route_manager:
+            self.log_line.emit("Route manager unavailable; cannot apply routes.")
+            return False
+        if not self._process or self._process.poll() is not None:
+            self.log_line.emit("VPN process is not running; connect before applying routes.")
+            return False
+        if not self._interface_name:
+            self.log_line.emit("VPN interface not yet detected; wait for connection to complete.")
+            return False
+        self._route_manager.apply_routes(
+            self.profile.name,
+            self.profile.routes,
+            self._interface_name,
+        )
+        return True
 
     def _launch_browser(self, url: str) -> None:
         browser_key = self.profile.browser

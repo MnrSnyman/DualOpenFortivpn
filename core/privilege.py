@@ -28,12 +28,10 @@ class PrivilegeManager:
     def has_pkexec(self) -> bool:
         return self._pkexec_path is not None
 
-    def ensure_password_cached(self, force_allow: bool = False) -> None:
+    def ensure_password_cached(self) -> None:
         if self._pkexec_path or not self._sudo_path:
             return
         if self._cached_password:
-            if force_allow and not self._cache_allowed:
-                self._cache_allowed = True
             return
         if not self._password_provider:
             raise RuntimeError("A sudo password provider is required.")
@@ -42,11 +40,7 @@ class PrivilegeManager:
             raise RuntimeError("Sudo password entry was cancelled by the user.")
         password, allow_cache = response
         self._cached_password = password
-        self._cache_allowed = allow_cache or force_allow
-
-    def cache_password_for_session(self) -> None:
-        """Force caching of the sudo password for the current application run."""
-        self.ensure_password_cached(force_allow=True)
+        self._cache_allowed = allow_cache
 
     def build_command(self, base_command: List[str]) -> Tuple[List[str], Optional[str]]:
         """Return a command list and optional sudo password for execution."""
@@ -85,12 +79,9 @@ class PrivilegeManager:
 
     def terminate_process_group(self, pgid: int, sig: signal.Signals = signal.SIGTERM) -> bool:
         """Send a signal to a process group using elevated privileges."""
+        command = ["/bin/kill", f"-{sig.value}", "--", f"-{pgid}"]
         try:
-            argv, password = self.build_command([
-                "/bin/sh",
-                "-c",
-                f"kill -{sig.value} -{pgid}",
-            ])
+            code, stdout, stderr = self.run_privileged(command)
         except RuntimeError as exc:
             from .logging_manager import get_logging_manager
 
@@ -101,32 +92,9 @@ class PrivilegeManager:
                 exc,
             )
             return False
-
-        password_input = f"{password}\n" if password else None
-
-        try:
-            result = subprocess.run(
-                argv,
-                input=password_input,
-                text=True,
-                capture_output=True,
-                timeout=5.0,
-                check=False,
-            )
-        except Exception as exc:
-            from .logging_manager import get_logging_manager
-
-            logger = get_logging_manager().logger
-            logger.warning(
-                "Failed to deliver %s to process group %s via privilege helper: %s",
-                sig.name,
-                pgid,
-                exc,
-            )
-            return False
-
-        if result.returncode != 0:
-            message = result.stderr.strip() or result.stdout.strip()
+        if code != 0:
+            message = stderr.strip() or stdout.strip()
+            # Returning False signals the caller to escalate further.
             if message:
                 from .logging_manager import get_logging_manager
 

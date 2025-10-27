@@ -200,8 +200,17 @@ class MainWindow(QMainWindow):
         disconnect_button.setMinimumWidth(96)
         disconnect_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         disconnect_button.clicked.connect(lambda checked=False, name=profile.name: self._disconnect_profile(name))
+        routes_button = QPushButton("Apply Routes")
+        routes_button.setObjectName("routesButton")
+        routes_button.setMinimumWidth(120)
+        routes_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        routes_button.setEnabled(bool(profile.routes))
+        routes_button.clicked.connect(
+            lambda checked=False, name=profile.name: self._apply_routes(name)
+        )
         layout.addWidget(connect_button)
         layout.addWidget(disconnect_button)
+        layout.addWidget(routes_button)
         layout.addStretch()
         widget.setLayout(layout)
         self.table.setCellWidget(row, 9, widget)
@@ -330,6 +339,24 @@ class MainWindow(QMainWindow):
             self._update_status(name, "Disconnected")
             if not self.sessions and not self.privilege_manager.cache_allowed():
                 self.privilege_manager.clear_cached_password()
+
+    def _apply_routes(self, name: str) -> None:
+        profile = self.config_manager.get(name)
+        if not profile:
+            QMessageBox.warning(self, "Missing", "Profile not found.")
+            return
+        if not profile.routes:
+            QMessageBox.information(self, "Routes", "No custom routes configured for this profile.")
+            return
+        session = self.sessions.get(name)
+        if not session:
+            QMessageBox.information(self, "Inactive", "Connect the VPN before applying routes.")
+            return
+        success = session.apply_routes()
+        if success:
+            self.logging_manager.logger.info(
+                "[%s] Manual route override triggered from UI", name
+            )
 
     def _log_session_output(self, profile: str, message: str) -> None:
         self.logging_manager.logger.info("[%s] %s", profile, message)
