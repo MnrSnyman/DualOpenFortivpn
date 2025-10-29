@@ -201,14 +201,6 @@ class RouteManager:
                 interface = self._detect_interface(existing)
                 if interface:
                     break
-        try:
-            self._privilege_manager.cache_password_for_session()
-        except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.warning(
-                "Unable to cache sudo password for session %s: %s",
-                session_id,
-                exc,
-            )
         if not interface:
             LOGGER.warning("Unable to determine VPN interface for session %s; skipping routes", session_id)
             return

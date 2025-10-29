@@ -333,10 +333,20 @@ class MainWindow(QMainWindow):
     def _disconnect_profile(self, name: str) -> None:
         session = self.sessions.get(name)
         if session:
+            self._update_status(name, "Disconnecting")
             session.stop()
-            session.wait(5000)
-            del self.sessions[name]
-            self._update_status(name, "Disconnected")
+            if not session.wait(10000):
+                self.logging_manager.logger.warning(
+                    "[%s] Disconnect wait timed out; forcing cleanup", name
+                )
+                VPNSession.cleanup_profile_processes(session.profile, self.privilege_manager, True)
+                if not session.wait(5000):
+                    self.logging_manager.logger.error(
+                        "[%s] Session thread did not exit after forced cleanup", name
+                    )
+            if session.isFinished() and name in self.sessions:
+                self.sessions.pop(name, None)
+                self._update_status(name, "Disconnected")
             if not self.sessions and not self.privilege_manager.cache_allowed():
                 self.privilege_manager.clear_cached_password()
 
@@ -411,10 +421,18 @@ class MainWindow(QMainWindow):
         return result
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        for session in list(self.sessions.values()):
+        active_sessions = list(self.sessions.items())
+        for _name, session in active_sessions:
             session.stop()
-            session.wait(5000)
+        for name, session in active_sessions:
+            if not session.wait(10000):
+                self.logging_manager.logger.warning(
+                    "[%s] Close wait timed out; forcing cleanup", name
+                )
+                VPNSession.cleanup_profile_processes(session.profile, self.privilege_manager, True)
+                session.wait(5000)
         self.sessions.clear()
+        VPNSession.terminate_orphaned_processes(self.privilege_manager)
         self.logging_manager.remove_listener(self._log_listener)
         if not self.privilege_manager.cache_allowed():
             self.privilege_manager.clear_cached_password()
