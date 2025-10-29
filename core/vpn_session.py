@@ -233,7 +233,9 @@ class VPNSession(QThread):
                 if not cmdline:
                     continue
                 identifier = " ".join(cmdline)
-                if "openfortivpn" not in name and "openfortivpn" not in cmdline[0]:
+                if "openfortivpn" not in name and not any(
+                    (part and "openfortivpn" in part) for part in cmdline
+                ):
                     continue
                 if not any(token in identifier for token in host_tokens):
                     continue
