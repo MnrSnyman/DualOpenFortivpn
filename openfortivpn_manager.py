@@ -17,7 +17,7 @@ from core.app_paths import (
     ensure_directories,
 )
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 PYTHON_DEPENDENCIES: List[Tuple[str, str]] = [
     ("yaml", "python3-pyyaml"),
     ("psutil", "python3-psutil"),
@@ -173,7 +173,7 @@ def main() -> None:
 
     from gui.main_window import MainWindow
 
-    window = MainWindow()
+    window = MainWindow(app_version=APP_VERSION)
     window.show()
     sys.exit(app.exec())
 

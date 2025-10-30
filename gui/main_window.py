@@ -43,9 +43,10 @@ class _LogEmitter(QObject):
 class MainWindow(QMainWindow):
     """High-level orchestration of the GUI and VPN session management."""
 
-    def __init__(self) -> None:
+    def __init__(self, app_version: str) -> None:
         super().__init__()
-        self.setWindowTitle("OpenFortiVPN Manager")
+        self.app_version = app_version
+        self.setWindowTitle(f"OpenFortiVPN Manager v{self.app_version}")
         self.resize(1200, 720)
         self.setStyleSheet(DARK_THEME_QSS)
 
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         for entry in history_snapshot:
             self._append_log(entry)
         self.logging_manager.add_listener(self._log_listener)
+        self.logging_manager.logger.info("OpenFortiVPN Manager version %s", self.app_version)
         self.logging_manager.logger.info("Using PyQt version: %s", QT_VERSION)
         if self.privilege_manager.has_pkexec():
             self.logging_manager.logger.info("pkexec detected; using pkexec for privileged operations.")
