@@ -230,9 +230,7 @@ class VPNSession(QThread):
                 detected_port = port_part
         port_str = str(profile.port)
         tokens.update({host_value, base_host, f"{base_host}:{port_str}", f"{base_host} {port_str}"})
-        tokens.add(port_str)
         if detected_port:
-            tokens.add(detected_port)
             tokens.add(f"{base_host} {detected_port}")
             tokens.add(f"{base_host}:{detected_port}")
         if profile.auth_type.lower() == "saml":
