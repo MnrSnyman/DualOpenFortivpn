@@ -55,6 +55,8 @@ class VPNSession(QThread):
         self._browser_launched = False
         self._allow_reconnect = True
         self._command_signature: Optional[Tuple[str, ...]] = None
+        self._remote_gateway_ip: Optional[str] = None
+        self._gateway_route_applied = False
 
     @classmethod
     def _register_process(
@@ -343,6 +345,8 @@ class VPNSession(QThread):
         self._route_manager.cleanup(self.profile.name)
         self._interface_name = None
         self._browser_launched = False
+        self._remote_gateway_ip = None
+        self._gateway_route_applied = False
 
     def run(self) -> None:
         backoff = 5
@@ -370,6 +374,11 @@ class VPNSession(QThread):
     def _run_once(self) -> bool:
         self._browser_launched = False
         self._interface_name = None
+        self._remote_gateway_ip = None
+        self._gateway_route_applied = False
+        host, _ = self._normalized_host_port()
+        if self._route_manager:
+            self._route_manager.record_gateway_hint(self.profile.name, host)
         command = self._build_command()
         self._command_signature = tuple(command)
         LOGGER.debug("Launching openfortivpn for profile %s", self.profile.name)
@@ -499,6 +508,14 @@ class VPNSession(QThread):
                     url = match.group(0).rstrip("'\"")
                     self._launch_browser(url)
                     self._browser_launched = True
+        gateway_match = re.search(r"remote\s+IP\s+address\s+([0-9a-fA-F:.]+)", line, re.IGNORECASE)
+        if gateway_match:
+            self._remote_gateway_ip = gateway_match.group(1)
+            if self._route_manager and not self._gateway_route_applied:
+                self._route_manager.ensure_gateway_route(
+                    self.profile.name, self._remote_gateway_ip
+                )
+                self._gateway_route_applied = True
         else:
             if PASSWORD_PROMPT_RE.search(line) and self._process and self._process.stdin:
                 if self._credentials:
@@ -518,6 +535,10 @@ class VPNSession(QThread):
         if not self._route_manager:
             self.log_line.emit("Route manager unavailable; cannot apply routes.")
             return False
+        if self._remote_gateway_ip and self._route_manager:
+            self._route_manager.ensure_gateway_route(
+                self.profile.name, self._remote_gateway_ip
+            )
         if not self._process or self._process.poll() is not None:
             self.log_line.emit("VPN process is not running; connect before applying routes.")
             return False

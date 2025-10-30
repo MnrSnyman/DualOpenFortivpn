@@ -34,6 +34,8 @@ class RouteManager:
     def __init__(self, privilege_manager: PrivilegeManager) -> None:
         self._privilege_manager = privilege_manager
         self._session_routes: Dict[str, List[AppliedRoute]] = {}
+        self._gateway_hints: Dict[str, Dict[str, Dict[str, str]]] = {}
+        self._session_gateway_targets: Dict[str, set[str]] = {}
         self._lock = threading.RLock()
 
     def _run_privileged(self, command: List[str]) -> Tuple[int, str, str]:
@@ -156,6 +158,143 @@ class RouteManager:
                 continue
             idx += 1
         return route
+
+    def _query_route(self, destination: str, family: int) -> Optional[Dict[str, str]]:
+        """Query the current routing decision for a destination."""
+        command = ["ip"]
+        if family == 6:
+            command.append("-6")
+        command.extend(["route", "get", destination])
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        first_line = result.stdout.strip().splitlines()[0]
+        tokens = first_line.split()
+        route: Dict[str, str] = {"destination": self._normalize_destination(destination, family)}
+        idx = 1
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token in {"via", "dev", "metric"} and idx + 1 < len(tokens):
+                route[token] = tokens[idx + 1]
+                idx += 2
+                continue
+            idx += 1
+        return route if "dev" in route else None
+
+    def record_gateway_hint(self, session_id: str, host: str) -> None:
+        """Remember how to reach the VPN gateway before tunnels alter routes."""
+        if not host:
+            return
+        try:
+            info = socket.getaddrinfo(host, None)
+        except socket.gaierror as exc:
+            LOGGER.debug("[%s] Unable to resolve %s for gateway hint: %s", session_id, host, exc)
+            return
+        with self._lock:
+            hints = self._gateway_hints.setdefault(session_id, {})
+            seen: set[str] = set()
+            for entry in info:
+                address = entry[4][0]
+                if address in seen:
+                    continue
+                seen.add(address)
+                family = 6 if ":" in address else 4
+                normalized = self._normalize_destination(address, family)
+                route = self._query_route(address, family)
+                if not route:
+                    continue
+                hints[normalized] = route
+                LOGGER.debug(
+                    "[%s] Stored gateway hint %s via %s dev %s",
+                    session_id,
+                    normalized,
+                    route.get("via", "direct"),
+                    route.get("dev", "unknown"),
+                )
+
+    def _apply_gateway_route(
+        self,
+        destination: str,
+        family: int,
+        hint: Dict[str, str],
+    ) -> bool:
+        device = hint.get("dev")
+        if not device:
+            LOGGER.warning("[system] REPLACE %s – no device information", destination)
+            return False
+        via = hint.get("via")
+        metric = hint.get("metric", "0")
+        command = ["ip"]
+        if family == 6:
+            command.append("-6")
+        command.extend(["route", "replace", destination])
+        if via:
+            command.extend(["via", via])
+        command.extend(["dev", device, "metric", metric])
+        code, stdout, stderr = self._run_privileged(command)
+        message = stderr.strip() or stdout.strip()
+        if code == 0:
+            LOGGER.info(
+                "[%s] REPLACE %s via %s metric %s – success",
+                device,
+                destination,
+                via or "direct",
+                metric,
+            )
+        else:
+            LOGGER.error(
+                "[%s] REPLACE %s via %s failed: %s",
+                device,
+                destination,
+                via or "direct",
+                message or "unknown error",
+            )
+            return False
+        flush_cmd = ["ip"]
+        if family == 6:
+            flush_cmd.append("-6")
+        flush_cmd.extend(["route", "flush", "cache"])
+        flush_code, flush_stdout, flush_stderr = self._run_privileged(flush_cmd)
+        flush_message = flush_stderr.strip() or flush_stdout.strip()
+        if flush_code == 0:
+            LOGGER.info("[system] FLUSH route cache")
+        elif flush_message:
+            LOGGER.warning("[system] FLUSH route cache failed: %s", flush_message)
+        return True
+
+    def ensure_gateway_route(self, session_id: str, destination: str) -> None:
+        """Ensure the VPN server itself is reachable via the original interface."""
+        family = 6 if ":" in destination else 4
+        normalized = self._normalize_destination(destination, family)
+        with self._lock:
+            hints = self._gateway_hints.get(session_id, {})
+            hint = hints.get(normalized)
+            if not hint:
+                hint = self._query_route(destination, family)
+                if hint:
+                    hints[normalized] = hint
+                    self._gateway_hints[session_id] = hints
+            if not hint:
+                LOGGER.warning(
+                    "[%s] REPLACE %s – no baseline route information",
+                    session_id,
+                    normalized,
+                )
+                return
+            if not self._apply_gateway_route(normalized, family, hint):
+                return
+            targets = self._session_gateway_targets.setdefault(session_id, set())
+            targets.add(normalized)
+            for other_session, destinations in self._session_gateway_targets.items():
+                if other_session == session_id:
+                    continue
+                other_hints = self._gateway_hints.get(other_session, {})
+                for other_destination in destinations:
+                    other_hint = other_hints.get(other_destination)
+                    if not other_hint:
+                        continue
+                    other_family = 6 if ":" in other_destination else 4
+                    self._apply_gateway_route(other_destination, other_family, other_hint)
 
     def _restore_previous_route(self, route: AppliedRoute, data: Optional[Dict[str, str]] = None) -> bool:
         entry = data or route.previous
@@ -371,6 +510,8 @@ class RouteManager:
     def cleanup(self, session_id: str) -> None:
         with self._lock:
             applied = self._session_routes.pop(session_id, [])
+            self._session_gateway_targets.pop(session_id, None)
+            self._gateway_hints.pop(session_id, None)
             if not applied:
                 return
             LOGGER.info("Cleaning custom routes for session %s", session_id)
