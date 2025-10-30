@@ -28,10 +28,14 @@ class PrivilegeManager:
     def has_pkexec(self) -> bool:
         return self._pkexec_path is not None
 
-    def ensure_password_cached(self) -> None:
-        if self._pkexec_path or not self._sudo_path:
+    def ensure_password_cached(self, force: bool = False) -> None:
+        """Populate the cached sudo password when sudo is preferred."""
+
+        if not self._sudo_path:
             return
-        if self._cached_password:
+        if self._cached_password is not None:
+            return
+        if self._pkexec_path and not force:
             return
         if not self._password_provider:
             raise RuntimeError("A sudo password provider is required.")
@@ -42,25 +46,36 @@ class PrivilegeManager:
         self._cached_password = password
         self._cache_allowed = allow_cache
 
-    def build_command(self, base_command: List[str]) -> Tuple[List[str], Optional[str]]:
-        """Return a command list and optional sudo password for execution."""
-        if self._pkexec_path:
-            return [self._pkexec_path, *base_command], None
-
-        if not self._sudo_path:
-            raise RuntimeError("Neither pkexec nor sudo is available on this system.")
-
-        if self._cached_password and self._cache_allowed:
-            return [self._sudo_path, "-S", *base_command], self._cached_password
-
-        self.ensure_password_cached()
+    def _build_sudo_command(self, base_command: List[str]) -> Tuple[List[str], Optional[str]]:
+        self.ensure_password_cached(force=True)
         if not self._cached_password:
             raise RuntimeError("Sudo password unavailable.")
         return [self._sudo_path, "-S", *base_command], self._cached_password
 
-    def run_privileged(self, command: List[str], input_text: Optional[str] = None) -> Tuple[int, str, str]:
+    def build_command(
+        self, base_command: List[str], prefer_sudo: bool = False
+    ) -> Tuple[List[str], Optional[str]]:
+        """Return a command list and optional sudo password for execution."""
+        if prefer_sudo and self._sudo_path:
+            return self._build_sudo_command(base_command)
+
+        if self._pkexec_path and not prefer_sudo:
+            return [self._pkexec_path, *base_command], None
+
+        if self._sudo_path:
+            return self._build_sudo_command(base_command)
+
+        raise RuntimeError("Neither pkexec nor sudo is available on this system.")
+
+    def run_privileged(
+        self,
+        command: List[str],
+        input_text: Optional[str] = None,
+        *,
+        prefer_sudo: bool = False,
+    ) -> Tuple[int, str, str]:
         """Execute a command with the configured privilege escalation helper."""
-        argv, password = self.build_command(command)
+        argv, password = self.build_command(command, prefer_sudo=prefer_sudo)
         process = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE if (password or input_text) else None,
@@ -75,6 +90,8 @@ class PrivilegeManager:
         if (password or input_text) and process.stdin:
             process.stdin.flush()
         stdout, stderr = process.communicate()
+        if password and not self._cache_allowed:
+            self._cached_password = None
         return process.returncode, stdout, stderr
 
     def terminate_process_group(self, pgid: int, sig: signal.Signals = signal.SIGTERM) -> bool:

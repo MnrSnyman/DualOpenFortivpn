@@ -229,6 +229,7 @@ class SudoPasswordDialog(QDialog):
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.password_edit)
         self.remember_check = QCheckBox("Remember password for this session")
+        self.remember_check.setChecked(True)
         layout.addWidget(self.remember_check)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)

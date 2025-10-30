@@ -39,7 +39,7 @@ class RouteManager:
         self._lock = threading.RLock()
 
     def _run_privileged(self, command: List[str]) -> Tuple[int, str, str]:
-        return self._privilege_manager.run_privileged(command)
+        return self._privilege_manager.run_privileged(command, prefer_sudo=True)
 
     def _resolve_targets(self, target: str) -> List[Tuple[str, int]]:
         """Expand a user-specified target into concrete destinations."""
