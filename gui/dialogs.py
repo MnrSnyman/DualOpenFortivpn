@@ -155,10 +155,18 @@ class ProfileDialog(QDialog):
         saml_port = None
         if auth_type == "saml" and self.custom_saml_check.isChecked():
             saml_port = self.saml_port_spin.value()
+
+        host_value = self.host_edit.text().strip()
+        port_value = self.port_spin.value()
+        if ":" in host_value:
+            host_part, _, port_part = host_value.rpartition(":")
+            if host_part and port_part.isdigit():
+                host_value = host_part
+                port_value = int(port_part)
         profile = VPNProfile(
             name=self.name_edit.text().strip(),
-            host=self.host_edit.text().strip(),
-            port=self.port_spin.value(),
+            host=host_value,
+            port=port_value,
             auth_type=auth_type,
             saml_port=saml_port,
             browser=self.browser_combo.currentData(),

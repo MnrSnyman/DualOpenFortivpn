@@ -35,10 +35,17 @@ class VPNProfile:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "VPNProfile":
+        raw_host = data.get("host", "")
+        port_value = int(data.get("port", 443))
+        if ":" in raw_host:
+            host_part, _, port_part = raw_host.rpartition(":")
+            if host_part and port_part.isdigit():
+                raw_host = host_part
+                port_value = int(port_part)
         return cls(
             name=data.get("name", "Unnamed"),
-            host=data.get("host", ""),
-            port=int(data.get("port", 443)),
+            host=raw_host,
+            port=port_value,
             auth_type=data.get("auth_type", "password"),
             saml_port=data.get("saml_port"),
             browser=data.get("browser", "system"),

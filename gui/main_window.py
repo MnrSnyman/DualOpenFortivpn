@@ -339,7 +339,12 @@ class MainWindow(QMainWindow):
                 self.logging_manager.logger.warning(
                     "[%s] Disconnect wait timed out; forcing cleanup", name
                 )
-                VPNSession.cleanup_profile_processes(session.profile, self.privilege_manager, True)
+                VPNSession.cleanup_profile_processes(
+                    session.profile,
+                    self.privilege_manager,
+                    True,
+                    session.command_signature(),
+                )
                 if not session.wait(5000):
                     self.logging_manager.logger.error(
                         "[%s] Session thread did not exit after forced cleanup", name
@@ -429,10 +434,16 @@ class MainWindow(QMainWindow):
                 self.logging_manager.logger.warning(
                     "[%s] Close wait timed out; forcing cleanup", name
                 )
-                VPNSession.cleanup_profile_processes(session.profile, self.privilege_manager, True)
+                VPNSession.cleanup_profile_processes(
+                    session.profile,
+                    self.privilege_manager,
+                    True,
+                    session.command_signature(),
+                )
                 session.wait(5000)
         self.sessions.clear()
         VPNSession.terminate_orphaned_processes(self.privilege_manager)
+        VPNSession.cleanup_all_profiles(self.config_manager.profiles(), self.privilege_manager)
         self.logging_manager.remove_listener(self._log_listener)
         if not self.privilege_manager.cache_allowed():
             self.privilege_manager.clear_cached_password()

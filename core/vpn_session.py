@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 import webbrowser
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import psutil
 
@@ -32,7 +32,7 @@ class VPNSession(QThread):
     disconnected = Signal(str)
 
     _registry_lock = threading.Lock()
-    _active_processes: Dict[int, Tuple[Optional[int], str]] = {}
+    _active_processes: Dict[int, Tuple[Optional[int], str, Tuple[str, ...]]] = {}
 
     def __init__(
         self,
@@ -54,11 +54,14 @@ class VPNSession(QThread):
         self._interface_name: Optional[str] = None
         self._browser_launched = False
         self._allow_reconnect = True
+        self._command_signature: Optional[Tuple[str, ...]] = None
 
     @classmethod
-    def _register_process(cls, pid: int, pgid: Optional[int], profile: str) -> None:
+    def _register_process(
+        cls, pid: int, pgid: Optional[int], profile: str, signature: Tuple[str, ...]
+    ) -> None:
         with cls._registry_lock:
-            cls._active_processes[pid] = (pgid, profile)
+            cls._active_processes[pid] = (pgid, profile, signature)
 
     @classmethod
     def _unregister_process(cls, pid: int) -> None:
@@ -199,13 +202,54 @@ class VPNSession(QThread):
             cls._unregister_process(pid)
 
     @classmethod
-    def _tracked_processes_for_profile(cls, profile: str) -> List[Tuple[int, Optional[int]]]:
+    def _tracked_processes_for_profile(
+        cls, profile: str
+    ) -> List[Tuple[int, Optional[int], Tuple[str, ...]]]:
         with cls._registry_lock:
             return [
-                (pid, data[0])
+                (pid, data[0], data[2])
                 for pid, data in cls._active_processes.items()
                 if data[1] == profile
             ]
+
+    @staticmethod
+    def _build_host_tokens(
+        profile: VPNProfile, signatures: Optional[Iterable[Tuple[str, ...]]] = None
+    ) -> List[str]:
+        tokens: set[str] = set()
+        host_value = profile.host or ""
+        base_host = host_value
+        detected_port: Optional[str] = None
+        if ":" in host_value:
+            host_part, _, port_part = host_value.rpartition(":")
+            if host_part:
+                base_host = host_part
+            if port_part.isdigit():
+                detected_port = port_part
+        port_str = str(profile.port)
+        tokens.update({host_value, base_host, f"{base_host}:{port_str}", f"{base_host} {port_str}"})
+        tokens.add(port_str)
+        if detected_port:
+            tokens.add(detected_port)
+            tokens.add(f"{base_host} {detected_port}")
+            tokens.add(f"{base_host}:{detected_port}")
+        if profile.auth_type.lower() == "saml":
+            tokens.add("--saml-login")
+            if profile.saml_port:
+                tokens.add(str(profile.saml_port))
+        if signatures:
+            for signature in signatures:
+                for part in signature:
+                    if not part:
+                        continue
+                    tokens.add(part)
+                    if ":" in part:
+                        base, _, remainder = part.rpartition(":")
+                        if base:
+                            tokens.add(base)
+                        if remainder:
+                            tokens.add(remainder)
+        return [token for token in tokens if token]
 
     @classmethod
     def _terminate_signature_matches(
@@ -213,13 +257,9 @@ class VPNSession(QThread):
         profile: VPNProfile,
         privilege: PrivilegeManager,
         forced: bool = False,
+        signatures: Optional[List[Tuple[str, ...]]] = None,
     ) -> None:
-        host = profile.host
-        port = profile.port
-        host_tokens = {host, f"{host}:{port}", f"{host} {port}"}
-        if profile.auth_type.lower() == "saml":
-            if profile.saml_port:
-                host_tokens.add(str(profile.saml_port))
+        host_tokens = cls._build_host_tokens(profile, signatures)
         with cls._registry_lock:
             tracked = set(cls._active_processes.keys())
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
@@ -233,9 +273,7 @@ class VPNSession(QThread):
                 if not cmdline:
                     continue
                 identifier = " ".join(cmdline)
-                if "openfortivpn" not in name and not any(
-                    (part and "openfortivpn" in part) for part in cmdline
-                ):
+                if "openfortivpn" not in name and "openfortivpn" not in cmdline[0]:
                     continue
                 if not any(token in identifier for token in host_tokens):
                     continue
@@ -249,18 +287,39 @@ class VPNSession(QThread):
 
     @classmethod
     def cleanup_profile_processes(
-        cls, profile: VPNProfile, privilege: PrivilegeManager, forced: bool = False
+        cls,
+        profile: VPNProfile,
+        privilege: PrivilegeManager,
+        forced: bool = False,
+        signature: Optional[Tuple[str, ...]] = None,
     ) -> None:
-        for pid, pgid in cls._tracked_processes_for_profile(profile.name):
+        tracked_signatures: List[Tuple[str, ...]] = []
+        for pid, pgid, tracked_signature in cls._tracked_processes_for_profile(profile.name):
+            if tracked_signature:
+                tracked_signatures.append(tracked_signature)
             cls._terminate_entry(pid, pgid, privilege, profile.name, forced)
-        cls._terminate_signature_matches(profile, privilege, forced)
+        if signature:
+            tracked_signatures.append(signature)
+        cls._terminate_signature_matches(profile, privilege, forced, tracked_signatures or None)
 
     @classmethod
     def terminate_orphaned_processes(cls, privilege: PrivilegeManager) -> None:
         with cls._registry_lock:
             entries = list(cls._active_processes.items())
-        for pid, (pgid, profile) in entries:
+        for pid, (pgid, profile, _signature) in entries:
             cls._terminate_entry(pid, pgid, privilege, profile, True)
+
+    @classmethod
+    def cleanup_all_profiles(
+        cls, profiles: Iterable[VPNProfile], privilege: PrivilegeManager
+    ) -> None:
+        seen: set[str] = set()
+        for profile in profiles:
+            key = profile.name
+            if key in seen:
+                continue
+            seen.add(key)
+            cls._terminate_signature_matches(profile, privilege, True)
 
     def stop(self) -> None:
         self._allow_reconnect = False
@@ -275,7 +334,12 @@ class VPNSession(QThread):
                 except Exception:
                     pgid = None
             self._terminate_entry(process.pid, pgid, self._privilege_manager, self.profile.name)
-        VPNSession.cleanup_profile_processes(self.profile, self._privilege_manager, True)
+        VPNSession.cleanup_profile_processes(
+            self.profile,
+            self._privilege_manager,
+            True,
+            self._command_signature,
+        )
         self._route_manager.cleanup(self.profile.name)
         self._interface_name = None
         self._browser_launched = False
@@ -297,12 +361,17 @@ class VPNSession(QThread):
                     break
                 time.sleep(1)
         self.status_changed.emit("Stopped")
-        VPNSession.cleanup_profile_processes(self.profile, self._privilege_manager)
+        VPNSession.cleanup_profile_processes(
+            self.profile,
+            self._privilege_manager,
+            signature=self._command_signature,
+        )
 
     def _run_once(self) -> bool:
         self._browser_launched = False
         self._interface_name = None
         command = self._build_command()
+        self._command_signature = tuple(command)
         LOGGER.debug("Launching openfortivpn for profile %s", self.profile.name)
         try:
             argv, password = self._privilege_manager.build_command(command)
@@ -329,7 +398,12 @@ class VPNSession(QThread):
                 self._process_group = os.getpgid(self._process.pid)
             except Exception:
                 self._process_group = None
-            VPNSession._register_process(self._process.pid, self._process_group, self.profile.name)
+            VPNSession._register_process(
+                self._process.pid,
+                self._process_group,
+                self.profile.name,
+                self._command_signature or tuple(command),
+            )
         except FileNotFoundError:
             message = "openfortivpn binary not found"
             LOGGER.error(message)
@@ -369,10 +443,12 @@ class VPNSession(QThread):
             VPNSession._unregister_process(pid)
         self._process = None
         self._process_group = None
+        self._command_signature = None
         return connected_once
 
     def _build_command(self) -> list[str]:
-        command = ["openfortivpn", f"{self.profile.host}:{self.profile.port}"]
+        host, port = self._normalized_host_port()
+        command = ["openfortivpn", f"{host}:{port}"]
         if self.profile.auth_type.lower() == "saml":
             if self.profile.saml_port:
                 command.append(f"--saml-login={self.profile.saml_port}")
@@ -382,6 +458,22 @@ class VPNSession(QThread):
             if self.profile.username:
                 command.append(f"--username={self.profile.username}")
         return command
+
+    def _normalized_host_port(self) -> Tuple[str, int]:
+        host = self.profile.host or ""
+        port = self.profile.port
+        if ":" in host:
+            host_part, _, port_part = host.rpartition(":")
+            if host_part and port_part.isdigit():
+                host = host_part
+                port = int(port_part)
+        if host != self.profile.host or port != self.profile.port:
+            self.profile.host = host
+            self.profile.port = port
+        return host, port
+
+    def command_signature(self) -> Optional[Tuple[str, ...]]:
+        return self._command_signature
 
     def _handle_output(self, line: str) -> None:
         if self._stop_event.is_set():
